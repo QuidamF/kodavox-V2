@@ -1,0 +1,13 @@
+fastapi
+uvicorn[standard]
+TTS
+pydantic
+python-multipart
+soundfile
+numpy
+
+huggingface-hub
+torch
+torchaudio
+torchcodec
+transformers==4.35.2

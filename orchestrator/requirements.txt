@@ -1,0 +1,8 @@
+python-socketio
+requests
+pyaudio
+websockets
+python-dotenv
+openwakeword
+numpy
+scipy

@@ -1,0 +1,25 @@
+services:
+  stt-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    volumes:
+      - whisper_models:/app/models
+    env_file:
+      - .env
+    # --- Descomenta la siguiente sección si quieres usar GPU (NVIDIA) ---
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: [gpu]
+
+volumes:
+  whisper_models:
+    # Usar un volumen nombrado de Docker para la persistencia de los modelos.
+    # El controlador 'local' es el predeterminado.
+    driver: local

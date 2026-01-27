@@ -1,0 +1,57 @@
+# Entorno y Configuración
+.env
+.venv/
+env/
+venv/
+ENV/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Archivos de Datos y Modelos (IA)
+# Evitamos subir GBs de modelos a GitHub
+services/stt/models/
+services/tts/voices/*.wav
+services/tts/tts_models/
+services/rag/data/*
+!services/rag/data/.gitkeep
+services/rag/ollama/
+services/rag/qdrant_storage/
+whisper_models/
+huggingface_cache/
+
+# Node (Dashboard)
+dashboard/frontend/node_modules/
+dashboard/frontend/dist/
+dashboard/frontend/.vite/
+
+# Sistema y Editores
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/

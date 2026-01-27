@@ -1,0 +1,22 @@
+# Archivos de virtualenv
+venv/
+*.pyc
+__pycache__/
+.env
+
+# Archivos de Docker
+.dockerignore
+
+# Almacenamiento de datos en tiempo de ejecución
+# Estos directorios contienen los modelos de LLM y la base de datos vectorial.
+# No deben ser versionados en git.
+ollama/
+qdrant_storage/
+st_cache/
+
+# Archivos de sistema operativo
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log

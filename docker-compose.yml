@@ -1,0 +1,119 @@
+services:
+  # STT Service (Whisper)
+  stt-service:
+    build:
+      context: ./services/stt
+      dockerfile: Dockerfile
+    container_name: stt-service
+    ports:
+      - "8000:8000"
+    volumes:
+      - whisper_models:/app/models
+    env_file:
+      - .env
+    restart: unless-stopped
+    # deploy: # Descomentar para usar GPU
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: [gpu]
+
+    # TTS Service (XTTS-v2)
+  tts-service:
+    build: ./services/tts
+    container_name: tts-service
+    ports:
+      - "8001:8000"
+    volumes:
+      - ./services/tts/app:/app/app
+      - ./services/tts/voices:/app/voices
+      - tts_models:/root/.local/share/tts
+      - huggingface_cache:/root/.cache/huggingface
+    env_file:
+      - .env
+    stdin_open: true
+    tty: true
+    restart: unless-stopped
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              # count: all
+              capabilities: [ gpu ]
+
+  # RAG Stack
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ./services/rag/ollama:/root/.ollama
+    restart: unless-stopped
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              # count: all
+              capabilities: [ gpu ]
+
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: qdrant
+    ports:
+      - "6333:6333"
+    volumes:
+      - ./services/rag/qdrant_storage:/qdrant/storage
+    restart: unless-stopped
+
+  rag-api:
+    build: ./services/rag/app
+    container_name: rag-api
+    ports:
+      - "8002:8000"
+    environment:
+      - OLLAMA_HOST=http://ollama:11434
+      - QDRANT_HOST=http://qdrant:6333
+      - LLM_PROVIDER=${LLM_PROVIDER}
+      - OLLAMA_MODEL=${OLLAMA_MODEL}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+    env_file:
+      - .env
+    depends_on:
+      - ollama
+      - qdrant
+    restart: unless-stopped
+    volumes:
+      - ./services/rag/data:/data
+
+  # Dashboard Backend
+  dashboard-api:
+    build: ./dashboard/backend
+    container_name: dashboard-api
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./.env:/app/.env
+      - ./services/rag/data:/services/rag/data
+      - ./services/tts/voices:/services/tts/voices
+    restart: unless-stopped
+
+  # Dashboard UI
+  dashboard-ui:
+    build: ./dashboard/frontend
+    container_name: dashboard-ui
+    ports:
+      - "80:80"
+    depends_on:
+      - dashboard-api
+    restart: unless-stopped
+
+volumes:
+  whisper_models:
+  tts_models:
+  huggingface_cache:

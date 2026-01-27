@@ -1,0 +1,10 @@
+venv/
+huggingface_cache/
+GEMINI.md
+log.txt
+*.wav
+audio_outputs/
+.env
+__pycache__/
+*.pyc
+.DS_Store

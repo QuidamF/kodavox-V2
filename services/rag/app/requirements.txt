@@ -1,0 +1,9 @@
+fastapi
+uvicorn
+requests
+qdrant-client
+sentence-transformers
+pypdf
+python-docx
+beautifulsoup4
+chardet

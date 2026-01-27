@@ -1,0 +1,33 @@
+services:
+  tts-service:
+    build: .
+    image: tts-service:latest
+    container_name: tts_service_container
+    ports:
+      - "8000:8000"
+    volumes:
+      # Monta el código de la aplicación para desarrollo en caliente (hot-reloading)
+      # Cualquier cambio en tu directorio local ./app se reflejará en el contenedor.
+      - ./app:/app/app
+      # Monta las voces para que persistan y se puedan añadir desde el host.
+      - ./voices:/app/voices
+      # Monta un volumen para el caché de los modelos de TTS.
+      # Esto evitará que se descarguen los modelos cada vez que reinicies el contenedor.
+      - tts_models:/root/.local/share/tts
+      - huggingface_cache:/root/.cache/huggingface
+    env_file:
+      - .env
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [ gpu ]
+    # Mantiene el contenedor corriendo y permite la interacción (ej. para el acuerdo de licencia)
+    stdin_open: true
+    tty: true
+
+volumes:
+  tts_models: # Define el volumen para el caché de los modelos
+  huggingface_cache:
