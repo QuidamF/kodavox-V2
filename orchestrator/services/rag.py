@@ -1,5 +1,5 @@
 import requests
-from ..config import Config
+from config import Config
 
 class RAGServiceAdapter:
     def __init__(self):
@@ -22,6 +22,12 @@ class RAGServiceAdapter:
             
             print(f"[RAGService] Answer: {answer[:50]}...")
             return answer
+        except requests.exceptions.HTTPError as e:
+            if e.response.status_code == 400:
+                print("[RAGService] Knowledge Base likely empty or missing collection.")
+                return "No tengo información en mi cerebro aún. Por favor sube documentos en el Dashboard."
+            print(f"[RAGService] HTTP Error: {e}")
+            return "Tuve un error de conexión con mi cerebro."
         except Exception as e:
             print(f"[RAGService] Error: {e}")
             return "Lo siento, tuve un problema al consultar mi base de conocimientos."

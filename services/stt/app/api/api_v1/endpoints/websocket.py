@@ -43,10 +43,14 @@ async def websocket_transcription(
                         # If the intention is to close connection after one transcription, use break.
                         # For now, let's allow multiple transcriptions in one session.
                     else:
-                        # Save buffer to file
-                        temp_audio_path = os.path.join(temp_dir, "stream.audio")
-                        with open(temp_audio_path, 'wb') as f:
-                            f.write(audio_buffer)
+                        # Save buffer to file as WAV
+                        temp_audio_path = os.path.join(temp_dir, "stream.wav")
+                        import wave
+                        with wave.open(temp_audio_path, 'wb') as wf:
+                            wf.setnchannels(1)
+                            wf.setsampwidth(2) # 16-bit
+                            wf.setframerate(16000)
+                            wf.writeframes(audio_buffer)
                         
                         # Transcribe
                         try:

@@ -50,7 +50,45 @@ async def upload_file(file: UploadFile = File(...)):
     async with aiofiles.open(file_path, 'wb') as out_file:
         content = await file.read()
         await out_file.write(content)
-    return {"filename": file.filename, "status": "uploaded"}
+        
+    # Forward to RAG Service for ingestion
+    try:
+        # Detect encoding for text files
+        text_content = content.decode('utf-8', errors='ignore')
+        
+        async with httpx.AsyncClient() as client:
+            # Enviar texto al servicio RAG
+            r = await client.post(
+                "http://rag-api:8000/ingest",
+                params={"text": text_content, "source": file.filename},
+                timeout=60.0
+            )
+            if r.status_code != 200:
+                print(f"Error ingesting file to RAG: {r.text}")
+                return {"filename": file.filename, "status": "uploaded_but_ingest_failed", "detail": r.text}
+                
+    except Exception as e:
+        print(f"Error forwarding to RAG: {e}")
+        return {"filename": file.filename, "status": "uploaded_but_forward_failed", "detail": str(e)}
+
+    return {"filename": file.filename, "status": "uploaded_and_ingested"}
+
+@app.delete("/rag/purge")
+async def purge_rag_db():
+    """Purga la base de datos del RAG."""
+    try:
+        async with httpx.AsyncClient() as client:
+            r = await client.delete("http://rag-api:8000/purge", timeout=60.0)
+            if r.status_code == 200:
+                # También limpiar carpeta local de archivos para mantener consistencia
+                if os.path.exists(RAG_DATA_DIR):
+                    for f in os.listdir(RAG_DATA_DIR):
+                        os.remove(os.path.join(RAG_DATA_DIR, f))
+                return {"status": "success", "message": "Memoria purgada y archivos eliminados."}
+            else:
+                return {"status": "error", "detail": r.text}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.delete("/files/{filename}")
 async def delete_file(filename: str):
@@ -131,17 +169,15 @@ async def update_config(key: str, value: str):
 async def check_services():
     """Verifica la salud de los microservicios usando nombres internos de Docker."""
     services = {
-        "stt": "http://stt:8000/health",
-        "tts": "http://tts:8001/api/health",
-        "rag": "http/rag-api:8002/health" # Corregido a nombre de servicio docker
+        "stt": "http://stt-service:8000/health",
+        "tts": "http://tts-service:8000/",
+        "rag": "http://rag-api:8000/health" 
     }
     results = {}
     async with httpx.AsyncClient(timeout=2) as client:
         for name, url in services.items():
             try:
-                # Corregir URL si falta protocolo
-                target_url = url if url.startswith("http") else f"http://{url}"
-                r = await client.get(target_url)
+                r = await client.get(url)
                 results[name] = "online" if r.status_code == 200 else "error"
             except:
                 results[name] = "offline"
@@ -155,7 +191,7 @@ async def test_stt():
     async with httpx.AsyncClient(timeout=5) as client:
         try:
             # Intentamos acceder al health y quizás a la info del modelo
-            r = await client.get("http://stt:8000/health")
+            r = await client.get("http://stt-service:8000/health")
             if r.status_code == 200:
                 return {"status": "success", "message": "STT (Whisper) listo y cargado en memoria."}
             return {"status": "error", "message": f"STT devolvió código {r.status_code}"}
@@ -169,7 +205,7 @@ async def test_tts():
     async with httpx.AsyncClient(timeout=10) as client:
         try:
             # En lugar de generar un audio real pesado, validamos el endpoint de salud de la API
-            r = await client.get("http://tts:8001/api/health")
+            r = await client.get("http://tts-service:8000/")
             if r.status_code == 200:
                 return {"status": "success", "message": "TTS (XTTS) listo. El motor de audio responde."}
             return {"status": "error", "message": "TTS fuera de línea o ocupado."}
@@ -182,7 +218,7 @@ async def test_rag():
     async with httpx.AsyncClient(timeout=10) as client:
         try:
             # Validamos que el RAG API y Qdrant estén sincronizados
-            r = await client.get("http://rag-api:8002/health")
+            r = await client.get("http://rag-api:8000/health")
             if r.status_code == 200:
                 return {"status": "success", "message": "RAG API y Base de Datos Vectorial operativos."}
             return {"status": "error", "message": "RAG API no respondió correctamente."}

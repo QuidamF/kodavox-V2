@@ -1,6 +1,7 @@
 import asyncio
 import signal
 import sys
+import uvicorn
 from core.event_bus import EventBus
 from core.state_manager import StateManager
 from core.orchestrator import VoiceOrchestrator
@@ -24,18 +25,18 @@ async def main():
         orchestrator.capturer.terminate()
         sys.exit(0)
 
-    signal.signal(signal_handler, signal.getsignal(signal.SIGINT))
+    signal.signal(signal.SIGINT, signal_handler)
 
     # Iniciar orquestador
     orchestrator.start()
 
-    # Mantener el loop de eventos corriendo (y servir Socket.IO si se desea)
-    # Por ahora solo mantenemos el proceso vivo
-    try:
-        while True:
-            await asyncio.sleep(1)
-    except asyncio.CancelledError:
-        pass
+    # Iniciar servidor Uvicorn para Socket.IO
+    # Configurar uvicorn config
+    config = uvicorn.Config(app=bus.app, host="0.0.0.0", port=5000, log_level="info")
+    server = uvicorn.Server(config)
+
+    print("[Main] Starting Uvicorn server for Socket.IO on port 5000...")
+    await server.serve()
 
 if __name__ == "__main__":
     try:

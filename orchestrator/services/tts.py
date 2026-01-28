@@ -1,6 +1,6 @@
 import requests
 import pyaudio
-from ..config import Config
+from config import Config
 
 class TTSServiceAdapter:
     def __init__(self):
@@ -40,7 +40,8 @@ class TTSServiceAdapter:
             format=pyaudio.paInt16,
             channels=1,
             rate=24000, # XTTS suele ser 24k
-            output=True
+            output=True,
+            output_device_index=Config.OUTPUT_DEVICE_INDEX
         )
 
         try:

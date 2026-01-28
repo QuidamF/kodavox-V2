@@ -55,3 +55,35 @@ Thumbs.db
 # Logs
 *.log
 logs/
+
+# Multimedia (Global Ignore - Keep repo light)
+*.wav
+*.mp3
+*.mp4
+*.mkv
+*.avi
+*.raw
+*.webm
+*.mov
+*.flac
+*.ogg
+
+# Archives & Downloads
+*.zip
+*.tar.gz
+*.rar
+*.7z
+*.iso
+*.exe
+*.msi
+temp/
+tmp/
+
+# Debug & Temporary Files
+debug_audio.py
+debug_*.wav
+debug_*.raw
+diagnostic.wav
+tools/output/
+tools/*.wav
+tools/*.raw

@@ -41,6 +41,10 @@ function App() {
   const [logs, setLogs] = useState([]);
   const [lastTranscript, setLastTranscript] = useState("");
   const [lastResponse, setLastResponse] = useState("");
+  const [audioEnergy, setAudioEnergy] = useState(0);
+
+  // Debug State
+  const [debugText, setDebugText] = useState("");
 
   const socketRef = useRef();
 
@@ -59,6 +63,13 @@ function App() {
     socketRef.current.on('disconnect', () => {
       setOrchState('OFFLINE');
       addLog("Desconectado del Orquestador");
+    });
+
+    socketRef.current.on('audio_chunk', (data) => {
+      // Normalizamos la energía para visualización (0-100 aprox)
+      // Ajustar factor según sensibilidad
+      const level = Math.min(100, (data.energy / 50));
+      setAudioEnergy(level);
     });
 
     socketRef.current.on('state_changed', (data) => {
@@ -187,8 +198,54 @@ function App() {
     }
   };
 
+  const handlePurge = async () => {
+    if (window.confirm("¿ESTAS SEGURO? Esto borrará TODA la memoria del cerebro RAG. Esta acción no se puede deshacer.")) {
+      try {
+        await axios.delete(`${API_BASE}/rag/purge`);
+        showMsg("Memoria purgada correctamente");
+        fetchData();
+      } catch (err) {
+        showMsg("Error al purgar memoria", "error");
+      }
+    }
+  };
+
   const runTest = async (module) => {
     setTesting(module);
+
+    if (module === 'audio') {
+      // Test de Audio especial (Client-side verification of socket events)
+      const initialEnergy = audioEnergy;
+      let maxDetected = 0;
+
+      const checkAudio = new Promise((resolve) => {
+        const start = Date.now();
+        const checker = setInterval(() => {
+          if (audioEnergy > maxDetected) maxDetected = audioEnergy;
+
+          // Si detectamos energía significativa > 10%
+          if (maxDetected > 10) {
+            clearInterval(checker);
+            resolve({ status: 'success', message: 'Micrófono detectando audio correctamente.' });
+          }
+
+          // Timeout de 5 segundos
+          if (Date.now() - start > 5000) {
+            clearInterval(checker);
+            resolve({ status: 'error', message: 'No se detectó audio. Verifique su micrófono.' });
+          }
+        }, 100);
+      });
+
+      const res = await checkAudio;
+      setTestResults(prev => ({ ...prev, [module]: res }));
+      if (res.status === 'success') showMsg("Prueba de Audio exitosa");
+      else showMsg("Fallo en prueba de Audio", "error");
+
+      setTesting(null);
+      return;
+    }
+
     try {
       const res = await axios.get(`${API_BASE}/test/${module}`);
       setTestResults(prev => ({ ...prev, [module]: res.data }));
@@ -211,6 +268,32 @@ function App() {
         // Es normal que falle la conexión al morir el proceso
         showMsg("Reiniciando sistema...");
       }
+    }
+  };
+
+  const handleDebugAction = (action) => {
+    if (!socketRef.current) return;
+
+    switch (action) {
+      case 'listen':
+        socketRef.current.emit('manual_listen', {});
+        showMsg("Escucha manual activada");
+        break;
+      case 'chat':
+        if (!debugText) return;
+        socketRef.current.emit('process_text', { text: debugText });
+        showMsg(`Enviado al chat: ${debugText}`);
+        break;
+      case 'tts':
+        if (!debugText) return;
+        socketRef.current.emit('speak_text', { text: debugText });
+        showMsg("Enviado a TTS");
+        break;
+      case 'rag':
+        if (!debugText) return;
+        socketRef.current.emit('query_rag', { text: debugText });
+        showMsg("Consultando RAG...");
+        break;
     }
   };
 
@@ -242,7 +325,8 @@ function App() {
           { id: 'status', icon: StatusIcon, label: 'Estado' },
           { id: 'rag', icon: Database, label: 'Base de Datos (RAG)' },
           { id: 'config', icon: Settings, label: 'Configuración' },
-          { id: 'tests', icon: Cpu, label: 'Pruebas' }
+          { id: 'tests', icon: Cpu, label: 'Pruebas' },
+          { id: 'debug', icon: Terminal, label: 'Consola / Debug' }
         ].map(tab => (
           <button
             key={tab.id}
@@ -277,6 +361,21 @@ function App() {
                     {orchState}
                   </div>
                   <p className="text-gray-500 text-sm">Estado actual del flujo de IA</p>
+
+                  {/* Visualizador de Micrófono */}
+                  <div className="mt-6 w-full px-8 flex flex-col items-center">
+                    <div className="flex items-center gap-2 mb-2">
+                      <Mic size={16} className={audioEnergy > 5 ? "text-green-400" : "text-gray-600"} />
+                      <span className="text-xs text-gray-500 uppercase font-bold">Nivel Micrófono</span>
+                    </div>
+                    <div className="w-full h-2 bg-white/5 rounded-full overflow-hidden">
+                      <motion.div
+                        className="h-full bg-gradient-to-r from-green-500 to-emerald-400"
+                        animate={{ width: `${audioEnergy}%` }}
+                        transition={{ type: "tween", ease: "linear", duration: 0.05 }}
+                      />
+                    </div>
+                  </div>
                 </div>
                 <div className="mt-4 pt-4 border-t border-white/5 space-y-3">
                   <div className="flex justify-between text-sm">
@@ -337,7 +436,8 @@ function App() {
                 {[
                   { id: 'stt', label: 'Speech-to-Text', desc: 'Valida carga de modelos Whisper y latencia de red.', icon: Mic },
                   { id: 'tts', label: 'Text-to-Speech', desc: 'Verifica generación de audio y salud de XTTS.', icon: Volume2 },
-                  { id: 'rag', label: 'RAG Engine', desc: 'Prueba la conexión Qdrant y lógica de recuperación.', icon: Database }
+                  { id: 'rag', label: 'RAG Engine', desc: 'Prueba la conexión Qdrant y lógica de recuperación.', icon: Database },
+                  { id: 'audio', label: 'Periféricos (Audio)', desc: 'Verifica si el sistema escucha tu micrófono.', icon: Mic }
                 ].map(mod => (
                   <div key={mod.id} className="glass-card flex flex-col justify-between">
                     <div>
@@ -436,6 +536,13 @@ function App() {
                   </div>
                 </div>
 
+              </div>
+
+              <div className="glass-card flex flex-col items-center justify-center text-center group border-dashed hover:border-blue-500/50">
+                <div className="p-6 rounded-full bg-blue-500/5 text-blue-400 group-hover:scale-110 transition-transform mb-4">
+                  <Upload size={48} />
+                </div>
+                <h4 className="text-lg font-medium mb-1">Subir Información</h4>
                 <div className="glass-card flex flex-col items-center justify-center text-center group border-dashed hover:border-blue-500/50">
                   <div className="p-6 rounded-full bg-blue-500/5 text-blue-400 group-hover:scale-110 transition-transform mb-4">
                     <Upload size={48} />
@@ -446,6 +553,24 @@ function App() {
                     Explorar
                     <input type="file" className="hidden" onChange={handleUpload} />
                   </label>
+                </div>
+              </div>
+
+              {/* Danger Zone RAG */}
+              <div className="glass-card border-red-900/30 bg-red-900/5">
+                <div className="flex flex-col md:flex-row justify-between items-center gap-6">
+                  <div>
+                    <h3 className="text-lg font-bold text-red-400 flex items-center gap-2 mb-1">
+                      <Trash2 size={20} /> Zona de Peligro
+                    </h3>
+                    <p className="text-gray-500 text-sm">Borrar todo el conocimiento adquirido.</p>
+                  </div>
+                  <button
+                    onClick={handlePurge}
+                    className="px-6 py-2 rounded-xl bg-red-600/80 hover:bg-red-500 text-white font-bold shadow-lg shadow-red-600/20 transition-all flex items-center gap-2 text-sm"
+                  >
+                    <Trash2 size={16} /> Purgar Memoria
+                  </button>
                 </div>
               </div>
             </motion.div>
@@ -563,11 +688,88 @@ function App() {
               </div>
             </motion.div>
           )}
+
+
+          {activeTab === 'debug' && (
+            <motion.div
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -10 }}
+              className="glass-card"
+            >
+              <h3 className="text-xl font-semibold mb-6 flex items-center gap-2">
+                <Terminal size={20} className="text-pink-400" /> Consola de Depuración Interactiva
+              </h3>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+                {/* Control Manual */}
+                <div className="space-y-6">
+                  <div className="p-4 bg-white/5 rounded-xl border border-white/10">
+                    <h4 className="font-bold text-gray-300 mb-2">Control de Voz</h4>
+                    <p className="text-xs text-gray-500 mb-4">Si el Wake Word falla, fuerza al sistema a escuchar.</p>
+                    <button
+                      onClick={() => handleDebugAction('listen')}
+                      className="w-full py-4 rounded-xl bg-red-500/20 text-red-400 border border-red-500/30 hover:bg-red-500/30 font-bold flex items-center justify-center gap-2 transition-all"
+                    >
+                      <Mic size={20} /> FORZAR ESCUCHA
+                    </button>
+                  </div>
+
+                  <div className="p-4 bg-white/5 rounded-xl border border-white/10">
+                    <h4 className="font-bold text-gray-300 mb-2">Entrada de Texto</h4>
+                    <p className="text-xs text-gray-500 mb-4">Escribe un comando o texto para probar los módulos.</p>
+                    <textarea
+                      value={debugText}
+                      onChange={(e) => setDebugText(e.target.value)}
+                      className="w-full bg-black/40 border border-white/10 rounded-xl p-3 text-white outline-none focus:border-pink-500 min-h-[100px]"
+                      placeholder="Escribe aquí (ej. 'Hola Jarvis' o un texto para TTS)..."
+                    />
+                  </div>
+                </div>
+
+                {/* Acciones de Texto */}
+                <div className="space-y-4">
+                  <button
+                    onClick={() => handleDebugAction('chat')}
+                    className="w-full p-4 rounded-xl bg-blue-500/10 hover:bg-blue-500/20 border border-blue-500/30 flex items-center justify-between group transition-all"
+                  >
+                    <div className="text-left">
+                      <span className="block font-bold text-blue-400 group-hover:text-blue-300">Chat con Jarvis</span>
+                      <span className="text-xs text-gray-500">Simula que hablaste este texto (Flujo completo)</span>
+                    </div>
+                    <MessageSquare size={20} className="text-blue-500 opacity-50 group-hover:opacity-100" />
+                  </button>
+
+                  <button
+                    onClick={() => handleDebugAction('tts')}
+                    className="w-full p-4 rounded-xl bg-purple-500/10 hover:bg-purple-500/20 border border-purple-500/30 flex items-center justify-between group transition-all"
+                  >
+                    <div className="text-left">
+                      <span className="block font-bold text-purple-400 group-hover:text-purple-300">Prueba TTS Directa</span>
+                      <span className="text-xs text-gray-500">Solo sintetiza y habla el texto (Sin RAG)</span>
+                    </div>
+                    <Volume2 size={20} className="text-purple-500 opacity-50 group-hover:opacity-100" />
+                  </button>
+
+                  <button
+                    onClick={() => handleDebugAction('rag')}
+                    className="w-full p-4 rounded-xl bg-yellow-500/10 hover:bg-yellow-500/20 border border-yellow-500/30 flex items-center justify-between group transition-all"
+                  >
+                    <div className="text-left">
+                      <span className="block font-bold text-yellow-400 group-hover:text-yellow-300">Consultar Cerebro (RAG)</span>
+                      <span className="text-xs text-gray-500">Consulta la base de datos vectorial y muestra respuesta</span>
+                    </div>
+                    <Database size={20} className="text-yellow-500 opacity-50 group-hover:opacity-100" />
+                  </button>
+                </div>
+              </div>
+            </motion.div>
+          )}
         </AnimatePresence>
-      </main>
+      </main >
 
       {/* Notifications */}
-      <div className="fixed bottom-8 right-8 space-y-2">
+      < div className="fixed bottom-8 right-8 space-y-2" >
         {msg && (
           <motion.div
             initial={{ opacity: 0, x: 50 }}
@@ -579,9 +781,10 @@ function App() {
             {msg.type === 'error' ? <AlertCircle size={20} /> : <CheckCircle2 size={20} />}
             <span className="font-medium">{msg.text}</span>
           </motion.div>
-        )}
-      </div>
-    </div>
+        )
+        }
+      </div >
+    </div >
   );
 }
 

@@ -82,6 +82,10 @@ services:
       - OLLAMA_MODEL=${OLLAMA_MODEL}
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - RAG_K=${RAG_K}
+      - RAG_MAX_CONTEXT=${RAG_MAX_CONTEXT}
+      - RAG_TEMPERATURE=${RAG_TEMPERATURE}
+      - RAG_MAX_LENGTH=${RAG_MAX_LENGTH}
     env_file:
       - .env
     depends_on:

@@ -16,6 +16,13 @@ class Config:
     # Audio Settings
     SAMPLE_RATE = int(os.getenv("SAMPLE_RATE", "16000"))
     CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", "1280"))
+    MICROPHONE_INDEX = int(os.getenv("MICROPHONE_INDEX", "1"))
+    OUTPUT_DEVICE_INDEX = int(os.getenv("OUTPUT_DEVICE_INDEX", "4"))
+    
+    # Mic Sensitivity
+    MIC_ENERGY_THRESHOLD = int(os.getenv("MIC_ENERGY_THRESHOLD", "300"))
+    MIC_DYNAMIC_ENERGY = os.getenv("MIC_DYNAMIC_ENERGY", "false").lower() == "true"
+    MIC_GAIN = float(os.getenv("MIC_GAIN", "1.0"))
 
     # TTS Settings
     TTS_VOICE_FILE = os.getenv("TTS_VOICE_FILE", "")
