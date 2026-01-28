@@ -12,13 +12,19 @@ class WakeWordService:
         self._active = False
         
         # Cargar modelo (descarga automática si no existe)
-        print(f"[WakeWordService] Loading model: {Config.WAKE_WORD_MODEL}")
+        model_name = Config.WAKE_WORD_MODEL
+        print(f"[WakeWordService] Loading model: {model_name}")
         try:
-            self.model = Model(wakeword_models=[Config.WAKE_WORD_MODEL], inference_framework="onnx")
+            # Intentar cargar con el nombre configurado
+            self.model = Model(wakeword_models=[model_name], inference_framework="onnx")
         except Exception as e:
-            print(f"[WakeWordService] Failed to load specific model, falling back/error: {e}")
-            # Fallback a un modelo por defecto si falla
-            self.model = Model() 
+            print(f"[WakeWordService] Failed to load model '{model_name}': {e}")
+            print("[WakeWordService] Falling back to default 'alexa' model...")
+            try:
+                self.model = Model(wakeword_models=["alexa"], inference_framework="onnx")
+            except Exception as e2:
+                print(f"[WakeWordService] Critical failure: Could not load even default model: {e2}")
+                raise e2
         
         self.cooldown = 0
         self.cooldown_frames = 25 # ~2 segundos con chunks de 80ms 

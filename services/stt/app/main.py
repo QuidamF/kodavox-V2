@@ -3,7 +3,10 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config import settings
 from app.api.api_v1.api import api_router
-from app.services.transcriber import get_transcriber_service
+from app.services.transcriber import get_transcriber_service, update_transcriber_config
+from app.database import init_db, get_config, update_config
+from pydantic import BaseModel
+from typing import Optional
 
 app = FastAPI(
     title=settings.PROJECT_NAME,
@@ -25,6 +28,8 @@ app.add_middleware(
 
 @app.on_event("startup")
 async def startup_event():
+    print("Initializing STT database...")
+    init_db()
     print("Initializing Transcriber Service...")
     # Pre-load model on startup
     get_transcriber_service()
@@ -35,3 +40,20 @@ app.include_router(api_router, prefix=settings.API_V1_STR)
 @app.get("/health", tags=["health"])
 async def health_check():
     return {"status": "ok"}
+
+class ConfigUpdate(BaseModel):
+    language: Optional[str] = None
+    beam_size: Optional[int] = None
+
+@app.get("/api/config")
+async def get_config_endpoint():
+    """Get current STT configuration."""
+    return get_config()
+
+@app.post("/api/config")
+async def update_config_endpoint(config: ConfigUpdate):
+    """Update STT configuration."""
+    data = config.dict(exclude_unset=True)
+    update_config(data)
+    update_transcriber_config(data)
+    return {"status": "updated", "config": get_config()}

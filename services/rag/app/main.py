@@ -7,6 +7,10 @@ import httpx
 from qdrant_client import QdrantClient
 from sentence_transformers import SentenceTransformer
 from pydantic import BaseModel # Import BaseModel
+from database import init_db, get_config, update_config
+
+# Inicializar Base de Datos
+init_db()
 
 # --- Configuración ---
 LLM_PROVIDER = os.getenv("LLM_PROVIDER", "ollama").lower()
@@ -18,11 +22,14 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 OLLAMA_TIMEOUT = float(os.getenv("OLLAMA_TIMEOUT", "30"))
 MAX_CONCURRENCY = int(os.getenv("MAX_CONCURRENCY", "4"))
 
-# RAG Params Defaults (from env vars)
-DEFAULT_K = int(os.getenv("RAG_K", "3"))
-DEFAULT_MAX_CONTEXT = int(os.getenv("RAG_MAX_CONTEXT", "4000"))
-DEFAULT_TEMPERATURE = float(os.getenv("RAG_TEMPERATURE", "0.0"))
-DEFAULT_MAX_LENGTH = int(os.getenv("RAG_MAX_LENGTH", "1024"))
+# Global config cache
+RAG_CONFIG = {}
+
+def refresh_rag_config():
+    global RAG_CONFIG
+    RAG_CONFIG = get_config()
+
+refresh_rag_config() # Initial load
 
 # Other RAG related constants
 COLLECTION_NAME = os.getenv("QDRANT_COLLECTION_NAME", "docs")
@@ -137,18 +144,44 @@ def _truncate(s: str, max_chars: int) -> str:
     if not s: return ""
     return s if len(s) <= max_chars else s[:max_chars].rsplit(" ", 1)[0] + "..."
 
+# --- Request Models ---
+class ConfigUpdate(BaseModel):
+    persona: Optional[str] = None
+    rag_k: Optional[int] = None
+    rag_max_context: Optional[int] = None
+    rag_temperature: Optional[float] = None
+    rag_max_length: Optional[int] = None
+    ollama_timeout: Optional[int] = None
+
 # --- Endpoints ---
+@app.get("/api/config")
+async def get_rag_config():
+    """Obtiene la configuración actual de la DB."""
+    return get_config()
+
+@app.post("/api/config")
+async def update_rag_config(config: ConfigUpdate):
+    """Actualiza la configuración en la DB."""
+    update_config(config.model_dump(exclude_unset=True))
+    refresh_rag_config() # Update cache
+    
+    global OLLAMA_TIMEOUT, llm
+    OLLAMA_TIMEOUT = RAG_CONFIG['ollama_timeout']
+    llm = get_llm_provider() # Re-instanciar con nuevo timeout
+    return {"status": "success", "config": RAG_CONFIG}
 
 @app.get("/ask")
 async def ask(
-    query: str = Query(...),
-    k: int = DEFAULT_K,
-    max_context_chars: int = DEFAULT_MAX_CONTEXT,
-    temperature: float = DEFAULT_TEMPERATURE,
-    max_length: int = DEFAULT_MAX_LENGTH,
-    include_sources: bool = False
+    query: str = Query(...)
 ):
-    print(f"INFO: Querying: {query} (k={k}, sources={include_sources})")
+    # 0) Usar config dinámica de la caché en memoria
+    persona = RAG_CONFIG['persona']
+    k = RAG_CONFIG['rag_k']
+    max_context_chars = RAG_CONFIG['rag_max_context']
+    temperature = RAG_CONFIG['rag_temperature']
+    max_length = RAG_CONFIG['rag_max_length']
+
+    print(f"INFO: Querying: {query} (k={k})")
     # 1) Embedding
     try:
         vec = list(_cached_encode(query))
@@ -179,26 +212,28 @@ async def ask(
         combined = "\n\n---\n\n".join(docs)
         if len(combined) > max_context_chars:
             combined = _truncate(combined, max_context_chars)
+        
+        # Usar instrucciones del sistema desde la configuración
+        system_instructions = RAG_CONFIG.get('system_instructions', '')
         prompt = (
-            "Eres un asistente de voz. Usa el contexto para responder de forma breve y clara.\n\n"
-            f"Contexto:\n{combined}\n\nPregunta: {query}\nRespuesta:"
+            f"{persona}\n\n"
+            f"{system_instructions}\n\n"
+            f"CONTEXTO:\n{combined}\n\n"
+            f"PREGUNTA: {query}\n"
+            f"RESPUESTA:"
         )
     else:
-        prompt = f"Responde de forma breve y clara: {query}"
+        # Sin contexto, rechazar la pregunta directamente
+        prompt = (
+            f"{persona}\n\n"
+            f"No se encontró información relevante en la base de conocimientos para responder a: '{query}'.\n"
+            f"Responde de forma educada indicando que no tienes esa información."
+        )
 
     # 4) Generar Respuesta con el proveedor seleccionado
     answer = await llm.generate(prompt, temperature=temperature, max_length=max_length)
 
-    # 5) Fuentes
-    sources = []
-    for hit in hits:
-        payload = getattr(hit, "payload", {}) if hasattr(hit, "payload") else hit.get("payload", {})
-        sources.append({"id": getattr(hit, "id", None), "source": payload.get("source")})
-
-    response = {"answer": answer}
-    if include_sources:
-        response["sources"] = sources
-    return response
+    return {"answer": answer}
 
 @app.post("/ingest")
 async def ingest(

@@ -9,6 +9,10 @@ from contextlib import asynccontextmanager, contextmanager
 import asyncio
 import numpy as np
 import json
+from .database import init_db, get_tts_config, update_tts_config
+
+# Initialize DB
+init_db()
 # Removed pydub and tempfile as we now enforce wav inputs
 
 # New imports for the correct XTTSv2 implementation
@@ -22,8 +26,10 @@ from .text_processing import split_into_sentences
 # --- Constants ---
 VOICES_DIR = "voices"
 OUTPUT_DIR = "audio_outputs"
+LATENTS_DIR = "latents"
 os.makedirs(VOICES_DIR, exist_ok=True)
 os.makedirs(OUTPUT_DIR, exist_ok=True)
+os.makedirs(LATENTS_DIR, exist_ok=True)
 
 
 # --- Device Setup ---
@@ -50,6 +56,9 @@ async def lifespan(app: FastAPI):
         tts_model.load_checkpoint(config, checkpoint_dir=checkpoint_dir, use_deepspeed=False)
         tts_model.to(device)
         print("--- XTTSv2 model loaded successfully ---")
+        
+        # Pre-load existing latents from disk
+        preload_latents()
     except Exception as e:
         print(f"--- FATAL: Failed to load XTTSv2 model: {e} ---")
         # In a real app, you might want to exit or handle this more gracefully
@@ -65,41 +74,20 @@ async def lifespan(app: FastAPI):
 app = FastAPI(lifespan=lifespan)
 
 
-# --- Service Configuration ---
-class ServiceConfig(BaseModel):
-    voice_sample: Optional[str] = None
-    language: Optional[str] = "es"
+# --- Service Configuration (Persistent & Cached) ---
+TTS_CONFIG = {}
 
-CONFIG_FILE = "tts_config.json"
+def refresh_tts_config():
+    global TTS_CONFIG
+    TTS_CONFIG = get_tts_config()
+    print(f"--- TTS Config Loaded: {TTS_CONFIG} ---")
 
-def load_config():
-    """Laws config from disk if exists"""
-    if os.path.exists(CONFIG_FILE):
-        try:
-            with open(CONFIG_FILE, "r") as f:
-                data = json.load(f)
-                return ServiceConfig(**data)
-        except Exception as e:
-            print(f"--- Error loading config: {e} ---")
-    return ServiceConfig()
-
-def save_config(config: ServiceConfig):
-    """Saves config to disk"""
-    try:
-        with open(CONFIG_FILE, "w") as f:
-            json.dump(config.model_dump(), f, indent=4)
-        print("--- Config saved to disk ---")
-    except Exception as e:
-        print(f"--- Error saving config: {e} ---")
-
-# Global configuration with defaults (loaded from disk)
-current_config = load_config()
+# Initial load
+refresh_tts_config()
 
 # --- Request Models ---
 class TTSRequest(BaseModel):
     text: str
-    voice_sample: Optional[str] = None
-    language: Optional[str] = None
 
 
 # --- Voice Latent Caching ---
@@ -121,19 +109,57 @@ def get_speaker_latents(voice_sample_name: str):
     
     print(f"--- Cache MISS for voice: {voice_sample_name} ---")
     
+    # Check disk for pre-computed latents
+    latent_path = os.path.join(LATENTS_DIR, f"{voice_sample_name}.pth")
+    if os.path.exists(latent_path):
+        print(f"--- Loading latents from disk: {latent_path} ---")
+        try:
+            data = torch.load(latent_path, map_location=device, weights_only=True)
+            gpt_cond_latent = data["gpt_cond_latent"]
+            speaker_embedding = data["speaker_embedding"]
+            speaker_latents_cache[voice_sample_name] = (gpt_cond_latent, speaker_embedding)
+            return gpt_cond_latent, speaker_embedding
+        except Exception as e:
+            print(f"--- Error loading latents from disk: {e} ---")
+
     voice_path = os.path.join(VOICES_DIR, voice_sample_name)
     if not os.path.exists(voice_path):
         raise HTTPException(status_code=404, detail=f"Voice sample '{voice_sample_name}' not found in '{VOICES_DIR}'.")
         
-    print(f"--- Computing latents for: {voice_path} ---")
+    print(f"--- Computing latents for: {voice_path} (This may take a few seconds) ---")
     try:
         gpt_cond_latent, speaker_embedding = tts_model.get_conditioning_latents(audio_path=[voice_path])
+        
+        # Save to disk for future use
+        print(f"--- Saving latents to disk: {latent_path} ---")
+        torch.save({
+            "gpt_cond_latent": gpt_cond_latent,
+            "speaker_embedding": speaker_embedding
+        }, latent_path)
+
         # Cache the result
         speaker_latents_cache[voice_sample_name] = (gpt_cond_latent, speaker_embedding)
         return gpt_cond_latent, speaker_embedding
     except Exception as e:
         print(f"--- Error computing latents: {e} ---")
         raise HTTPException(status_code=500, detail=f"Failed to process voice sample: {str(e)}")
+
+def preload_latents():
+    """Scans LATENTS_DIR and loads all available latents into memory."""
+    print("--- Pre-loading latents from disk ---")
+    if not os.path.exists(LATENTS_DIR):
+        return
+    
+    for f in os.listdir(LATENTS_DIR):
+        if f.endswith(".pth"):
+            voice_name = f[:-4] # strip .pth
+            latent_path = os.path.join(LATENTS_DIR, f)
+            try:
+                data = torch.load(latent_path, map_location=device, weights_only=True)
+                speaker_latents_cache[voice_name] = (data["gpt_cond_latent"], data["speaker_embedding"])
+                print(f"--- Pre-loaded latents for: {voice_name} ---")
+            except Exception as e:
+                print(f"--- Failed to pre-load {f}: {e} ---")
 
 
 
@@ -143,38 +169,32 @@ def get_speaker_latents(voice_sample_name: str):
 @app.get("/")
 async def root():
     if tts_model is None:
-        raise HTTPException(status_code=503, detail="TTS model is not available.")
-    return {"status": "online", "message": "TTS service is running", "config": current_config}
+        raise HTTPException(status_code=53, detail="TTS model is not available.")
+    return {"status": "online", "message": "TTS service is running", "config": TTS_CONFIG}
 
+
+class ConfigUpdate(BaseModel):
+    voice_sample: Optional[str] = None
+    language: Optional[str] = None
 
 @app.post("/api/config")
-async def update_config(config: ServiceConfig):
+async def update_config_endpoint(config: ConfigUpdate):
     """
-    Updates the default configuration for the service.
-    If a voice_sample is provided, it attempts to pre-compute and cache the latents.
+    Updates the configuration in the DB and refreshes the cache.
     """
-    global current_config
+    update_data = config.model_dump(exclude_unset=True)
+    update_tts_config(update_data)
     
-    if config.language:
-        current_config.language = config.language
-        print(f"--- Config: Default language set to {config.language} ---")
-
     if config.voice_sample:
         print(f"--- Config: Pre-loading voice {config.voice_sample} ---")
         try:
             # Trigger latent computation (this will cache it)
             get_speaker_latents(config.voice_sample)
-            current_config.voice_sample = config.voice_sample
-            print(f"--- Config: Voice {config.voice_sample} loaded and active ---")
-        except HTTPException as e:
-            raise e
         except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Failed to load voice: {e}")
+            print(f"--- Warning: Failed to pre-load voice {config.voice_sample}: {e} ---")
 
-    # Persist the new configuration
-    save_config(current_config)
-
-    return {"status": "updated", "config": current_config}
+    refresh_tts_config()
+    return {"status": "updated", "config": TTS_CONFIG}
 
 
 
@@ -186,14 +206,12 @@ async def tts_batch(request: TTSRequest):
     print(f"--- Received batch request: {request} ---")
     
     try:
-        # Determine voice and language (Request > Config > Default is handled by logic)
-        voice_sample = request.voice_sample or current_config.voice_sample
-        language = request.language or current_config.language
+        # Determine voice and language from cached config
+        voice_sample = TTS_CONFIG['voice_sample']
+        language = TTS_CONFIG['language'] or "es"
 
         if not voice_sample:
-            raise HTTPException(status_code=400, detail="Voice sample not specified in request or default config.")
-        if not language:
-             language = "es" # Fallback if even config is empty
+            raise HTTPException(status_code=400, detail="Voice sample not specified in config.")
 
         # Get latents (cached or computed)
         gpt_cond_latent, speaker_embedding = get_speaker_latents(voice_sample)
@@ -263,9 +281,9 @@ async def tts_stream(request: TTSRequest):
 
     async def streaming_generator():
         try:
-            # Determine voice and language
-            voice_sample = request.voice_sample or current_config.voice_sample
-            language = request.language or current_config.language
+            # Determine voice and language from cached config
+            voice_sample = TTS_CONFIG['voice_sample']
+            language = TTS_CONFIG['language'] or "es"
 
             if not voice_sample:
                 # We can't raise HTTP exception easily inside a generator, so we print and return

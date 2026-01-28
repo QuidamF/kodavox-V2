@@ -29,11 +29,11 @@ Write-Host "`nIniciando Orquestador de Voz..." -ForegroundColor Green
 # Verificar dependencias
 if (Test-Path "orchestrator/requirements.txt") {
     Write-Host "Verificando dependencias de Python..."
-    py -3.13 -m pip install -q -r orchestrator/requirements.txt
+    python -m pip install -q --no-warn-script-location -r orchestrator/requirements.txt
 }
 
 # Ejecutar el orquestador en una nueva ventana para mantener los logs visibles
-Start-Process powershell -ArgumentList "-NoExit", "-Command", "py -3.13 orchestrator/main.py"
+Start-Process powershell -ArgumentList "-NoExit", "-Command", "python orchestrator/main.py"
 
 Write-Host "`nSistema en marcha!" -ForegroundColor Cyan
 Write-Host "Accede al Dashboard en: http://localhost"

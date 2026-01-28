@@ -4,6 +4,7 @@ pyaudio
 websockets
 python-dotenv
 openwakeword
+onnxruntime
 numpy
 scipy
 uvicorn

@@ -35,6 +35,23 @@ function App() {
   const [msg, setMsg] = useState(null);
   const [testResults, setTestResults] = useState({});
   const [testing, setTesting] = useState(null);
+  const [ragConfig, setRagConfig] = useState({
+    persona: "",
+    system_instructions: "",
+    rag_k: 4,
+    rag_max_context: 6000,
+    rag_temperature: 0.1,
+    rag_max_length: 1024,
+    ollama_timeout: 300
+  });
+  const [ttsConfig, setTtsConfig] = useState({
+    voice_sample: "",
+    language: "es"
+  });
+  const [sttConfig, setSttConfig] = useState({
+    language: "es",
+    beam_size: 5
+  });
 
   // Estados en tiempo real del orquestador
   const [orchState, setOrchState] = useState('OFFLINE');
@@ -109,11 +126,71 @@ function App() {
       setFiles(filesRes.data);
       setConfig(configRes.data);
       setVoices(voicesRes.data);
+      fetchRagConfig();
+      fetchTtsConfig();
+      fetchSttConfig();
       fetchHealth();
     } catch (err) {
       showMsg("Backend de gestión no disponible", "error");
     }
     setLoading(false);
+  };
+
+  const fetchRagConfig = async () => {
+    try {
+      const res = await axios.get(`${API_BASE}/rag/config`);
+      setRagConfig(res.data);
+    } catch (err) {
+      console.error("Error fetching RAG config:", err);
+    }
+  };
+
+  const saveRagConfig = async (newConfig) => {
+    try {
+      await axios.post(`${API_BASE}/rag/config`, newConfig);
+      setRagConfig(newConfig);
+      showMsg("Configuración RAG guardada");
+    } catch (err) {
+      showMsg("Error al guardar configuración RAG", "error");
+    }
+  };
+
+  const fetchTtsConfig = async () => {
+    try {
+      const res = await axios.get(`${API_BASE}/tts/config`);
+      setTtsConfig(res.data);
+    } catch (err) {
+      console.error("Error fetching TTS config:", err);
+    }
+  };
+
+  const saveTtsConfig = async (newConfig) => {
+    try {
+      await axios.post(`${API_BASE}/tts/config`, newConfig);
+      setTtsConfig(newConfig);
+      showMsg("Configuración de Voz guardada");
+    } catch (err) {
+      showMsg("Error al guardar configuración de Voz", "error");
+    }
+  };
+
+  const fetchSttConfig = async () => {
+    try {
+      const res = await axios.get(`${API_BASE}/stt/config`);
+      setSttConfig(res.data);
+    } catch (err) {
+      console.error("Error fetching STT config:", err);
+    }
+  };
+
+  const saveSttConfig = async (newConfig) => {
+    try {
+      await axios.post(`${API_BASE}/stt/config`, newConfig);
+      setSttConfig(newConfig);
+      showMsg("Configuración STT guardada");
+    } catch (err) {
+      showMsg("Error al guardar configuración STT", "error");
+    }
   };
 
   const fetchHealth = async () => {
@@ -581,52 +658,213 @@ function App() {
               initial={{ opacity: 0, y: 10 }}
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: -10 }}
-              className="grid grid-cols-1 md:grid-cols-2 gap-8"
+              className="space-y-8"
             >
-              {/* LLM Provider */}
+              {/* Comportamiento y Personalidad */}
               <div className="glass-card">
                 <h3 className="text-xl font-semibold mb-6 flex items-center gap-2">
-                  <Cpu size={20} className="text-purple-400" /> Inteligencia (LLM)
+                  <MessageSquare size={20} className="text-blue-400" /> Personalidad del Agente
                 </h3>
-                <div className="space-y-6">
+                <div className="space-y-4">
                   <div>
-                    <label className="block text-sm text-gray-400 mb-2">Proveedor</label>
-                    <select
-                      value={config.LLM_PROVIDER}
-                      onChange={(e) => updateConfig("LLM_PROVIDER", e.target.value)}
-                      className="w-full bg-white/5 border border-white/10 rounded-xl p-3 outline-none focus:border-purple-500"
-                    >
-                      <option value="ollama">Ollama (Local - Gratis)</option>
-                      <option value="openai">OpenAI (Cloud - Pago)</option>
-                      <option value="gemini">Gemini (Cloud - Pago)</option>
-                    </select>
+                    <label className="block text-sm text-gray-400 mb-2">Instrucciones de Sistema (Roleplay)</label>
+                    <textarea
+                      value={ragConfig.persona}
+                      onChange={(e) => setRagConfig({ ...ragConfig, persona: e.target.value })}
+                      className="w-full bg-white/5 border border-white/10 rounded-xl p-4 outline-none focus:border-blue-500 min-h-[120px] text-gray-200"
+                      placeholder="Ej: Eres un asistente sarcástico y divertido..."
+                    />
                   </div>
+                  <div>
+                    <label className="block text-sm text-gray-400 mb-2">Instrucciones del Sistema (Cómo usar el RAG)</label>
+                    <textarea
+                      value={ragConfig.system_instructions}
+                      onChange={(e) => setRagConfig({ ...ragConfig, system_instructions: e.target.value })}
+                      className="w-full bg-white/5 border border-white/10 rounded-xl p-4 outline-none focus:border-purple-500 min-h-[140px] text-gray-200 font-mono text-sm"
+                      placeholder="Ej: INSTRUCCIONES CRÍTICAS:\n1. SOLO puedes responder usando la información del CONTEXTO...\n2. Si la pregunta NO puede responderse..."
+                    />
+                  </div>
+                  <div className="flex justify-end">
+                    <button
+                      onClick={() => saveRagConfig(ragConfig)}
+                      className="px-6 py-2 rounded-xl bg-blue-600 hover:bg-blue-500 text-white font-bold transition-all flex items-center gap-2"
+                    >
+                      <Save size={18} /> Guardar Personalidad
+                    </button>
+                  </div>
+                </div>
+              </div>
 
-                  {config.LLM_PROVIDER === 'ollama' && (
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+                {/* Parámetros Técnicos RAG */}
+                <div className="glass-card">
+                  <h3 className="text-xl font-semibold mb-6 flex items-center gap-2">
+                    <Database size={20} className="text-blue-400" /> Parámetros de RAG
+                  </h3>
+                  <div className="space-y-4">
+                    <div className="grid grid-cols-2 gap-4">
+                      <div>
+                        <label className="block text-sm text-gray-400 mb-1">K (Docs a recuperar)</label>
+                        <input
+                          type="number"
+                          value={ragConfig.rag_k}
+                          onChange={(e) => setRagConfig({ ...ragConfig, rag_k: parseInt(e.target.value) })}
+                          className="w-full bg-white/5 border border-white/10 rounded-xl p-2 outline-none focus:border-blue-500"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-sm text-gray-400 mb-1">Temperatura</label>
+                        <input
+                          type="number"
+                          step="0.1"
+                          value={ragConfig.rag_temperature}
+                          onChange={(e) => setRagConfig({ ...ragConfig, rag_temperature: parseFloat(e.target.value) })}
+                          className="w-full bg-white/5 border border-white/10 rounded-xl p-2 outline-none focus:border-blue-500"
+                        />
+                      </div>
+                    </div>
                     <div>
-                      <label className="block text-sm text-gray-400 mb-2">Modelo Local</label>
+                      <label className="block text-sm text-gray-400 mb-1">Máximo Contexto (Caracteres)</label>
                       <input
-                        type="text"
-                        value={config.OLLAMA_MODEL}
-                        onBlur={(e) => updateConfig("OLLAMA_MODEL", e.target.value)}
-                        className="w-full bg-white/5 border border-white/10 rounded-xl p-3 outline-none focus:border-purple-500"
-                        placeholder="ej. qwen2.5:1.5b"
+                        type="number"
+                        value={ragConfig.rag_max_context}
+                        onChange={(e) => setRagConfig({ ...ragConfig, rag_max_context: parseInt(e.target.value) })}
+                        className="w-full bg-white/5 border border-white/10 rounded-xl p-2 outline-none focus:border-blue-500"
                       />
                     </div>
-                  )}
-
-                  {(config.LLM_PROVIDER === 'openai' || config.LLM_PROVIDER === 'gemini') && (
                     <div>
-                      <label className="block text-sm text-gray-400 mb-2">API Key</label>
+                      <label className="block text-sm text-gray-400 mb-1">Máxima Longitud Respuesta</label>
                       <input
-                        type="password"
-                        value={config.LLM_PROVIDER === 'openai' ? config.OPENAI_API_KEY : config.GEMINI_API_KEY}
-                        onBlur={(e) => updateConfig(config.LLM_PROVIDER === 'openai' ? "OPENAI_API_KEY" : "GEMINI_API_KEY", e.target.value)}
-                        className="w-full bg-white/5 border border-white/10 rounded-xl p-3 outline-none focus:border-purple-500"
-                        placeholder="sk-..."
+                        type="number"
+                        value={ragConfig.rag_max_length}
+                        onChange={(e) => setRagConfig({ ...ragConfig, rag_max_length: parseInt(e.target.value) })}
+                        className="w-full bg-white/5 border border-white/10 rounded-xl p-2 outline-none focus:border-blue-500"
                       />
                     </div>
-                  )}
+                    <div className="flex justify-end pt-2">
+                      <button
+                        onClick={() => saveRagConfig(ragConfig)}
+                        className="px-6 py-2 rounded-xl bg-blue-600/20 hover:bg-blue-600/30 text-blue-400 border border-blue-500/30 font-bold transition-all flex items-center gap-2"
+                      >
+                        <Save size={18} /> Aplicar Parámetros
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Parámetros de Voz (TTS) */}
+                <div className="glass-card">
+                  <h3 className="text-xl font-semibold mb-6 flex items-center gap-2">
+                    <Volume2 size={20} className="text-emerald-400" /> Parámetros de Voz (TTS)
+                  </h3>
+                  <div className="space-y-4">
+                    <div className="grid grid-cols-1 gap-4">
+                      <div>
+                        <label className="block text-sm text-gray-400 mb-1">Voz Activa</label>
+                        <select
+                          value={ttsConfig.voice_sample}
+                          onChange={(e) => setTtsConfig({ ...ttsConfig, voice_sample: e.target.value })}
+                          className="w-full bg-white/5 border border-white/10 rounded-xl p-2 outline-none focus:border-emerald-500"
+                        >
+                          <option value="">Seleccionar voz...</option>
+                          {voices.map(v => (
+                            <option key={v.name} value={v.name}>{v.name}</option>
+                          ))}
+                        </select>
+                      </div>
+                      <div>
+                        <label className="block text-sm text-gray-400 mb-1">Idioma</label>
+                        <select
+                          value={ttsConfig.language}
+                          onChange={(e) => setTtsConfig({ ...ttsConfig, language: e.target.value })}
+                          className="w-full bg-white/5 border border-white/10 rounded-xl p-2 outline-none focus:border-emerald-500"
+                        >
+                          <option value="es">Español</option>
+                          <option value="en">English</option>
+                          <option value="fr">Français</option>
+                          <option value="de">Deutsch</option>
+                          <option value="it">Italiano</option>
+                          <option value="pt">Português</option>
+                        </select>
+                      </div>
+                    </div>
+                    <div className="pt-4 flex justify-end">
+                      <button
+                        onClick={() => saveTtsConfig(ttsConfig)}
+                        className="px-6 py-2 rounded-xl bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-400 border border-emerald-500/30 font-bold transition-all flex items-center gap-2"
+                      >
+                        <Save size={18} /> Guardar Configuración de Voz
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                {/* STT Configuration */}
+                <div className="glass-card">
+                  <h3 className="text-xl font-semibold mb-6 flex items-center gap-2">
+                    <Mic size={20} className="text-green-400" /> Configuración STT
+                  </h3>
+                  <div className="space-y-4">
+                    <div>
+                      <label className="block text-sm text-gray-400 mb-2">Idioma</label>
+                      <select value={sttConfig.language} onChange={(e) => setSttConfig({ ...sttConfig, language: e.target.value })} className="w-full bg-white/5 border border-white/10 rounded-xl p-3 outline-none focus:border-green-500">
+                        <option value="es">Español</option>
+                        <option value="en">English</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-sm text-gray-400 mb-2">Beam Size (1-10)</label>
+                      <input type="number" min="1" max="10" value={sttConfig.beam_size} onChange={(e) => setSttConfig({ ...sttConfig, beam_size: parseInt(e.target.value) })} className="w-full bg-white/5 border border-white/10 rounded-xl p-3 outline-none focus:border-green-500" />
+                    </div>
+                    <button onClick={() => saveSttConfig(sttConfig)} className="px-6 py-2 rounded-xl bg-green-600 hover:bg-green-500 text-white font-bold">Guardar STT</button>
+                  </div>
+                </div>
+
+                {/* LLM Provider */}
+                <div className="glass-card">
+                  <h3 className="text-xl font-semibold mb-6 flex items-center gap-2">
+                    <Cpu size={20} className="text-purple-400" /> Inteligencia (LLM)
+                  </h3>
+                  <div className="space-y-6">
+                    <div>
+                      <label className="block text-sm text-gray-400 mb-2">Proveedor</label>
+                      <select
+                        value={config.LLM_PROVIDER}
+                        onChange={(e) => updateConfig("LLM_PROVIDER", e.target.value)}
+                        className="w-full bg-white/5 border border-white/10 rounded-xl p-3 outline-none focus:border-purple-500"
+                      >
+                        <option value="ollama">Ollama (Local - Gratis)</option>
+                        <option value="openai">OpenAI (Cloud - Pago)</option>
+                        <option value="gemini">Gemini (Cloud - Pago)</option>
+                      </select>
+                    </div>
+
+                    {config.LLM_PROVIDER === 'ollama' && (
+                      <div>
+                        <label className="block text-sm text-gray-400 mb-2">Modelo Local</label>
+                        <input
+                          type="text"
+                          value={config.OLLAMA_MODEL}
+                          onBlur={(e) => updateConfig("OLLAMA_MODEL", e.target.value)}
+                          className="w-full bg-white/5 border border-white/10 rounded-xl p-3 outline-none focus:border-purple-500"
+                          placeholder="ej. qwen2.5:1.5b"
+                        />
+                      </div>
+                    )}
+
+                    {(config.LLM_PROVIDER === 'openai' || config.LLM_PROVIDER === 'gemini') && (
+                      <div>
+                        <label className="block text-sm text-gray-400 mb-2">API Key</label>
+                        <input
+                          type="password"
+                          value={config.LLM_PROVIDER === 'openai' ? config.OPENAI_API_KEY : config.GEMINI_API_KEY}
+                          onBlur={(e) => updateConfig(config.LLM_PROVIDER === 'openai' ? "OPENAI_API_KEY" : "GEMINI_API_KEY", e.target.value)}
+                          className="w-full bg-white/5 border border-white/10 rounded-xl p-3 outline-none focus:border-purple-500"
+                          placeholder="sk-..."
+                        />
+                      </div>
+                    )}
+                  </div>
                 </div>
               </div>
 
@@ -635,7 +873,7 @@ function App() {
                 <h3 className="text-xl font-semibold mb-6 flex items-center gap-2">
                   <Mic size={20} className="text-green-400" /> Voz (STT/TTS)
                 </h3>
-                <div className="space-y-6">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
                   <div>
                     <label className="block text-sm text-gray-400 mb-2">Idioma</label>
                     <div className="flex gap-4">

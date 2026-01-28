@@ -8,6 +8,8 @@ services:
     ports:
       - "8000:8000"
     volumes:
+      - ./services/stt/app:/app/app
+      - ./services/stt/db:/app/db
       - whisper_models:/app/models
     env_file:
       - .env
@@ -29,6 +31,8 @@ services:
     volumes:
       - ./services/tts/app:/app/app
       - ./services/tts/voices:/app/voices
+      - ./services/tts/db:/app/db
+      - ./services/tts/latents:/app/latents
       - tts_models:/root/.local/share/tts
       - huggingface_cache:/root/.cache/huggingface
     env_file:
@@ -82,10 +86,6 @@ services:
       - OLLAMA_MODEL=${OLLAMA_MODEL}
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - GEMINI_API_KEY=${GEMINI_API_KEY}
-      - RAG_K=${RAG_K}
-      - RAG_MAX_CONTEXT=${RAG_MAX_CONTEXT}
-      - RAG_TEMPERATURE=${RAG_TEMPERATURE}
-      - RAG_MAX_LENGTH=${RAG_MAX_LENGTH}
     env_file:
       - .env
     depends_on:
@@ -94,6 +94,7 @@ services:
     restart: unless-stopped
     volumes:
       - ./services/rag/data:/data
+      - ./services/rag/db:/app/db
 
   # Dashboard Backend
   dashboard-api:

@@ -151,7 +151,6 @@ async def get_config():
         "STT_LANGUAGE": os.getenv("LANGUAGE", "es"),
         "OPENAI_API_KEY": os.getenv("OPENAI_API_KEY", ""),
         "GEMINI_API_KEY": os.getenv("GEMINI_API_KEY", ""),
-        "TTS_VOICE_FILE": os.getenv("TTS_VOICE_FILE", ""),
     }
 
 @app.post("/config")
@@ -162,6 +161,89 @@ async def update_config(key: str, value: str):
     
     set_key(ENV_PATH, key.upper(), value)
     return {"status": "updated", "key": key, "value": value}
+
+# --- Gestión de Configuración RAG (Persistente en DB) ---
+
+@app.get("/rag/config")
+async def get_rag_dynamic_config():
+    """Proxy para obtener la configuración dinámica del RAG."""
+    try:
+        async with httpx.AsyncClient() as client:
+            r = await client.get("http://rag-api:8000/api/config", timeout=5.0)
+            if r.status_code == 200:
+                return r.json()
+            else:
+                raise HTTPException(status_code=r.status_code, detail=r.text)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/rag/config")
+async def update_rag_dynamic_config(config: dict):
+    """Proxy para actualizar la configuración dinámica del RAG."""
+    try:
+        async with httpx.AsyncClient() as client:
+            r = await client.post("http://rag-api:8000/api/config", json=config, timeout=5.0)
+            if r.status_code == 200:
+                return r.json()
+            else:
+                raise HTTPException(status_code=r.status_code, detail=r.text)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# --- Gestión de Configuración TTS (Persistente en DB) ---
+
+@app.get("/tts/config")
+async def get_tts_dynamic_config():
+    """Proxy para obtener la configuración dinámica del TTS."""
+    try:
+        async with httpx.AsyncClient() as client:
+            r = await client.get("http://tts-service:8000/", timeout=5.0)
+            if r.status_code == 200:
+                return r.json().get("config", {})
+            else:
+                raise HTTPException(status_code=r.status_code, detail=r.text)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/tts/config")
+async def update_tts_dynamic_config(config: dict):
+    """Proxy para actualizar la configuración dinámica del TTS."""
+    try:
+        async with httpx.AsyncClient() as client:
+            r = await client.post("http://tts-service:8000/api/config", json=config, timeout=5.0)
+            if r.status_code == 200:
+                return r.json()
+            else:
+                raise HTTPException(status_code=r.status_code, detail=r.text)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# --- STT Configuration Proxy ---
+@app.get("/stt/config")
+async def get_stt_config():
+    """Proxy para obtener la configuración del STT."""
+    try:
+        async with httpx.AsyncClient() as client:
+            r = await client.get("http://stt-service:8000/api/config", timeout=5.0)
+            if r.status_code == 200:
+                return r.json()
+            else:
+                raise HTTPException(status_code=r.status_code, detail=r.text)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/stt/config")
+async def update_stt_config(config: dict):
+    """Proxy para actualizar la configuración del STT."""
+    try:
+        async with httpx.AsyncClient() as client:
+            r = await client.post("http://stt-service:8000/api/config", json=config, timeout=5.0)
+            if r.status_code == 200:
+                return r.json()
+            else:
+                raise HTTPException(status_code=r.status_code, detail=r.text)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 # --- Estado del Sistema ---
 

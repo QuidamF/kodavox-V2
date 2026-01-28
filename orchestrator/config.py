@@ -10,7 +10,7 @@ class Config:
     RAG_URI = os.getenv("RAG_URI", "http://localhost:8002/ask")
 
     # Wake Word (Local runtime)
-    WAKE_WORD_MODEL = os.getenv("WAKE_WORD_MODEL", "hey_jarvis_v0.1")
+    WAKE_WORD_MODEL = os.getenv("WAKE_WORD_MODEL", "hey_jarvis")
     WAKE_WORD_THRESHOLD = float(os.getenv("WAKE_WORD_THRESHOLD", "0.5"))
 
     # Audio Settings
@@ -25,4 +25,4 @@ class Config:
     MIC_GAIN = float(os.getenv("MIC_GAIN", "1.0"))
 
     # TTS Settings
-    TTS_VOICE_FILE = os.getenv("TTS_VOICE_FILE", "")
+    TTS_VOICE_FILE = os.getenv("TTS_VOICE_FILE", os.getenv("VOICE_SAMPLE", ""))

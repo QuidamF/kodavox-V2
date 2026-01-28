@@ -3,6 +3,7 @@ import os
 from functools import partial
 from faster_whisper import WhisperModel
 from app.core.config import settings
+from app.database import get_config
 
 class TranscriberService:
     def __init__(self):
@@ -10,7 +11,11 @@ class TranscriberService:
         self.device = settings.DEVICE
         self.compute_type = "default"
         self.models_dir = settings.MODELS_DIR
-        self.language = settings.LANGUAGE
+        
+        # Load configuration from database
+        config = get_config()
+        self.language = config.get('language') if config else None
+        self.beam_size = config.get('beam_size', 5) if config else 5
 
         if not os.path.exists(self.models_dir):
             os.makedirs(self.models_dir)
@@ -30,7 +35,7 @@ class TranscriberService:
         """
         segments, info = self.model.transcribe(
             file_path,
-            beam_size=5,
+            beam_size=self.beam_size,
             language=self.language
         )
 
@@ -61,3 +66,12 @@ def get_transcriber_service() -> TranscriberService:
     if _transcriber_instance is None:
         _transcriber_instance = TranscriberService()
     return _transcriber_instance
+
+def update_transcriber_config(data: dict):
+    """Update the transcriber configuration in memory."""
+    global _transcriber_instance
+    if _transcriber_instance:
+        if 'language' in data:
+            _transcriber_instance.language = data['language']
+        if 'beam_size' in data:
+            _transcriber_instance.beam_size = data['beam_size']
