@@ -1,5 +1,6 @@
 import asyncio
 import threading
+import time
 from config import Config
 from core.event_bus import EventBus
 from core.state_manager import StateManager, AppState
@@ -26,6 +27,11 @@ class VoiceOrchestrator:
         self._loop = None
         self._silence_counter = 0
         self._max_silence_chunks = 35 # ~2.8 segundos de silencio para cortar (increased)
+
+        # Task Management
+        self.current_task = None
+        self.current_stream_id = 0.0 # Timestamp del stream activo
+        self.interruption_lock = asyncio.Lock()
 
         # Registrar eventos
         self.bus.on("wakeword_detected", self.handle_wakeword)
@@ -81,15 +87,30 @@ class VoiceOrchestrator:
                 print("[Orchestrator] Silence detected, finishing speech capture.")
                 self._silence_counter = 0
                 # Disparar el procesamiento en una tarea separada para no bloquear
-                asyncio.create_task(self.process_interaction())
+                # Disparar el procesamiento en una tarea separada para no bloquear
+                self.current_task = asyncio.create_task(self.process_interaction())
+
+    async def cancel_current_interaction(self):
+        """Cancela la interacción actual si existe."""
+        async with self.interruption_lock:
+            if self.current_task and not self.current_task.done():
+                print("[Orchestrator] Cancelling current interaction (Barge-in)...")
+                self.current_task.cancel()
+                try:
+                    await self.current_task
+                except asyncio.CancelledError:
+                    print("[Orchestrator] Interaction cancelled successfully.")
+                self.current_task = None
+                
+                # Emitir evento de cancelación al frontend para frenar audio
+                await self.bus.emit("audio_stop", {})
 
     async def handle_wakeword(self, data):
         """Manejador disparado cuando se detecta la palabra clave."""
         print(f"[Orchestrator] handle_wakeword triggered. State: {self.state_manager.get_state()}")
         try:
-            if self.state_manager.get_state() != AppState.LISTENING_WAKEWORD:
-                print("[Orchestrator] Ignoring wake word (not listening)")
-                return
+            # Permitir interrupción en cualquier estado (Barge-in)
+            await self.cancel_current_interaction()
 
             print("[Orchestrator] Wake word detected! Starting interaction.")
             await self.state_manager.set_state(AppState.LISTENING_USER)
@@ -113,22 +134,35 @@ class VoiceOrchestrator:
         if text:
             print(f"[Orchestrator] Processing manual text: {text}")
             # Simulamos estado de escucha para que process_interaction no rechace
+            await self.cancel_current_interaction()
             await self.state_manager.set_state(AppState.LISTENING_USER) 
-            await self.process_interaction(text=text)
+            self.current_task = asyncio.create_task(self.process_interaction(text=text))
 
+    async def handle_speak_text(self, data):
+        """Sintetiza texto directamente."""
     async def handle_speak_text(self, data):
         """Sintetiza texto directamente."""
         text = data.get("text", "")
         if text:
             print(f"[Orchestrator] Manual TTS: {text}")
             
+            # Cancelar anterior
+            await self.cancel_current_interaction()
+            
+            # Generar nuevo ID de stream
+            self.current_stream_id = time.time()
+            stream_id = self.current_stream_id
+
             # Same streaming logic as process_interaction
             stream_gen = self.tts_service.stream_audio_async(text)
             import base64
             
             async for chunk in stream_gen:
+                if self.current_stream_id != stream_id:
+                     print("[Orchestrator] Stream aborted during manual TTS.")
+                     break
                 b64_chunk = base64.b64encode(chunk).decode('utf-8')
-                await self.bus.emit("audio_playback_chunk", {"data": b64_chunk})
+                await self.bus.emit("audio_playback_chunk", {"data": b64_chunk, "stream_id": stream_id})
 
 
     async def handle_query_rag(self, data):
@@ -167,15 +201,24 @@ class VoiceOrchestrator:
             await self.state_manager.set_state(AppState.SPEAKING)
             # Enviar feedback de voz
             
+            # Generar nuevo ID de stream (Si process interaction fue llamado, es la nueva verdad)
+            self.current_stream_id = time.time()
+            stream_id = self.current_stream_id
+            
             # Streaming tanto local como remoto (async)
             stream_gen = self.tts_service.stream_audio_async(response_text)
             
             import base64
             # Procesamos el generador chunk a chunk
             async for chunk in stream_gen:
+                # Verificar cancelación
+                if self.current_stream_id != stream_id:
+                     print("[Orchestrator] Stream aborted during processing.")
+                     break
+                     
                 # Emitir al frontend
                 b64_chunk = base64.b64encode(chunk).decode('utf-8')
-                await self.bus.emit("audio_playback_chunk", {"data": b64_chunk})
+                await self.bus.emit("audio_playback_chunk", {"data": b64_chunk, "stream_id": stream_id})
             
             # Para restaurar playback local Y remoto simultáneo sin re-escribir todo el audio framework:
             # Simplemente llamamos a speak() normal en un thread (que hace playback local)

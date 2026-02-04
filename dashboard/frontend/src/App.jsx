@@ -66,6 +66,7 @@ function App() {
   const socketRef = useRef();
   const audioContextRef = useRef(null);
   const nextStartTimeRef = useRef(0);
+  const activeStreamIdRef = useRef(0);
 
   useEffect(() => {
     fetchData();
@@ -106,19 +107,47 @@ function App() {
       addLog(`AI: ${data.answer}`);
     });
 
+    socketRef.current.on('audio_stop', () => {
+      console.log("[Audio] Stopping playback (Barge-in)");
+      // Invalidate current stream: Force it to be effectively "infinite" future relative to any old stream in seconds, 
+      // OR just sync to current time in seconds.
+      activeStreamIdRef.current = Date.now() / 1000.0;
+
+      if (audioContextRef.current) {
+        // Force Close immediately - no promise wait needed if we nullify
+        try {
+          audioContextRef.current.close();
+        } catch (e) { console.error("Error closing ctx", e); }
+        audioContextRef.current = null;
+        nextStartTimeRef.current = 0;
+      }
+    });
+
     socketRef.current.on('audio_playback_chunk', async (data) => {
       try {
+        const streamId = data.stream_id || 0;
+
+        // Strict De-duplication:
+        // Use epsilon for float comparison safety if needed, but < is usually fine.
+        if (streamId < activeStreamIdRef.current) {
+          // console.warn(`[Audio] Dropping zombie chunk ${streamId} < ${activeStreamIdRef.current}`);
+          return;
+        }
+
+        // Update active stream if newer
+        if (streamId > activeStreamIdRef.current) {
+          activeStreamIdRef.current = streamId;
+        }
+
         if (!audioContextRef.current) {
           audioContextRef.current = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 24000 });
         }
         const ctx = audioContextRef.current;
-
-        if (ctx.state === 'suspended') {
-          await ctx.resume();
+        if (ctx.state === 'suspended' || ctx.state === 'closed') {
+          if (ctx.state === 'suspended') await ctx.resume();
         }
 
         // Decode base64 
-        // data.data should be the base64 string
         const b64Data = data.data || data;
         const binaryString = window.atob(b64Data);
         const len = binaryString.length;
@@ -128,28 +157,26 @@ function App() {
           bytes[i] = binaryString.charCodeAt(i);
         }
 
-        // Convert S16LE bytes to Float32
-        // 16-bit PCM is 2 bytes per sample.
         const int16View = new Int16Array(bytes.buffer);
         const float32Buffer = ctx.createBuffer(1, int16View.length, 24000);
         const channelData = float32Buffer.getChannelData(0);
 
         for (let i = 0; i < int16View.length; i++) {
-          // Normalize 16-bit signed int to float [-1.0, 1.0]
           channelData[i] = int16View[i] / 32768.0;
         }
 
-        // Schedule Playback
         const source = ctx.createBufferSource();
         source.buffer = float32Buffer;
         source.connect(ctx.destination);
 
-        // Ensure smooth concatenation
         const currentTime = ctx.currentTime;
-        const startAt = Math.max(currentTime, nextStartTimeRef.current);
+        if (nextStartTimeRef.current < currentTime) {
+          nextStartTimeRef.current = currentTime;
+        }
+
+        const startAt = nextStartTimeRef.current;
         source.start(startAt);
 
-        // Advance time
         nextStartTimeRef.current = startAt + float32Buffer.duration;
 
       } catch (e) {
