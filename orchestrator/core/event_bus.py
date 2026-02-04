@@ -37,7 +37,7 @@ class EventBus:
                 except Exception as e:
                     print(f"[EventBus] Error in internal listener for {event}: {e}")
         else:
-             if event != "audio_chunk":
+             if event != "audio_chunk" and event != "audio_playback_chunk":
                  print(f"[EventBus] No internal listeners for '{event}'")
 
         # 2. Emitir a clientes socketio (UI) de forma NO BLOQUEANTE (Fire-and-forget)

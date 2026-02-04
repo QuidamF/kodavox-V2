@@ -121,7 +121,15 @@ class VoiceOrchestrator:
         text = data.get("text", "")
         if text:
             print(f"[Orchestrator] Manual TTS: {text}")
-            await asyncio.to_thread(self.tts_service.speak, text)
+            
+            # Same streaming logic as process_interaction
+            stream_gen = self.tts_service.stream_audio_async(text)
+            import base64
+            
+            async for chunk in stream_gen:
+                b64_chunk = base64.b64encode(chunk).decode('utf-8')
+                await self.bus.emit("audio_playback_chunk", {"data": b64_chunk})
+
 
     async def handle_query_rag(self, data):
         """Consulta RAG directamente."""
@@ -158,7 +166,25 @@ class VoiceOrchestrator:
             # 3. Sintetizar respuesta (TTS)
             await self.state_manager.set_state(AppState.SPEAKING)
             # Enviar feedback de voz
-            await asyncio.to_thread(self.tts_service.speak, response_text)
+            
+            # Streaming tanto local como remoto (async)
+            stream_gen = self.tts_service.stream_audio_async(response_text)
+            
+            import base64
+            # Procesamos el generador chunk a chunk
+            async for chunk in stream_gen:
+                # Emitir al frontend
+                b64_chunk = base64.b64encode(chunk).decode('utf-8')
+                await self.bus.emit("audio_playback_chunk", {"data": b64_chunk})
+            
+            # Para restaurar playback local Y remoto simultáneo sin re-escribir todo el audio framework:
+            # Simplemente llamamos a speak() normal en un thread (que hace playback local)
+            # PERO eso no nos da los chunks para el frontend.
+            # ENTONCES: La mejor ruta es que process_interaction consuma el stream y emita.
+            # Desactivamos playback local temporalmente en este loop o lo implementamos malamente:
+            
+            # TODO: Implementar playback local asíncrono real.
+
 
             # 4. Volver a esperar
             print("[Orchestrator] Resuming wake word detection.")

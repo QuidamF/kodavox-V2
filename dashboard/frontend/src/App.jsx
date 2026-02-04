@@ -64,6 +64,8 @@ function App() {
   const [debugText, setDebugText] = useState("");
 
   const socketRef = useRef();
+  const audioContextRef = useRef(null);
+  const nextStartTimeRef = useRef(0);
 
   useEffect(() => {
     fetchData();
@@ -104,9 +106,63 @@ function App() {
       addLog(`AI: ${data.answer}`);
     });
 
+    socketRef.current.on('audio_playback_chunk', async (data) => {
+      try {
+        if (!audioContextRef.current) {
+          audioContextRef.current = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 24000 });
+        }
+        const ctx = audioContextRef.current;
+
+        if (ctx.state === 'suspended') {
+          await ctx.resume();
+        }
+
+        // Decode base64 
+        // data.data should be the base64 string
+        const b64Data = data.data || data;
+        const binaryString = window.atob(b64Data);
+        const len = binaryString.length;
+
+        const bytes = new Uint8Array(len);
+        for (let i = 0; i < len; i++) {
+          bytes[i] = binaryString.charCodeAt(i);
+        }
+
+        // Convert S16LE bytes to Float32
+        // 16-bit PCM is 2 bytes per sample.
+        const int16View = new Int16Array(bytes.buffer);
+        const float32Buffer = ctx.createBuffer(1, int16View.length, 24000);
+        const channelData = float32Buffer.getChannelData(0);
+
+        for (let i = 0; i < int16View.length; i++) {
+          // Normalize 16-bit signed int to float [-1.0, 1.0]
+          channelData[i] = int16View[i] / 32768.0;
+        }
+
+        // Schedule Playback
+        const source = ctx.createBufferSource();
+        source.buffer = float32Buffer;
+        source.connect(ctx.destination);
+
+        // Ensure smooth concatenation
+        const currentTime = ctx.currentTime;
+        const startAt = Math.max(currentTime, nextStartTimeRef.current);
+        source.start(startAt);
+
+        // Advance time
+        nextStartTimeRef.current = startAt + float32Buffer.duration;
+
+      } catch (e) {
+        console.error("Error playing audio chunk", e);
+      }
+    });
+
     return () => {
       clearInterval(interval);
-      socketRef.current.disconnect();
+      if (socketRef.current) socketRef.current.disconnect();
+      if (audioContextRef.current) {
+        audioContextRef.current.close();
+      }
     };
   }, []);
 
@@ -348,8 +404,20 @@ function App() {
     }
   };
 
-  const handleDebugAction = (action) => {
+  const handleDebugAction = async (action) => {
     if (!socketRef.current) return;
+
+    // Ensure AudioContext is running on user gesture
+    if (!audioContextRef.current) {
+      audioContextRef.current = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 24000 });
+    }
+    if (audioContextRef.current.state === 'suspended') {
+      try {
+        await audioContextRef.current.resume();
+      } catch (e) {
+        console.error("Audio resume failed", e);
+      }
+    }
 
     switch (action) {
       case 'listen':
