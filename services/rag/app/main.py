@@ -62,6 +62,8 @@ except Exception as e:
 class LLMProvider(Protocol):
     async def generate(self, prompt: str, temperature: float, max_length: int) -> str:
         ...
+    async def generate_stream(self, prompt: str, temperature: float, max_length: int):
+        ...
 
 class OllamaProvider:
     async def generate(self, prompt: str, temperature: float, max_length: int) -> str:
@@ -78,6 +80,27 @@ class OllamaProvider:
                 if r.status_code != 200:
                     raise HTTPException(status_code=500, detail=f"Ollama error: {r.text}")
                 return r.json().get("response", "")
+
+    async def generate_stream(self, prompt: str, temperature: float, max_length: int):
+        payload = {
+            "model": OLLAMA_MODEL,
+            "prompt": prompt,
+            "stream": True,
+            "temperature": temperature,
+            "max_length": max_length
+        }
+        async with semaphore:
+            async with httpx.AsyncClient(timeout=OLLAMA_TIMEOUT) as client:
+                async with client.stream("POST", f"{OLLAMA_HOST}/api/generate", json=payload) as response:
+                    response.raise_for_status()
+                    async for chunk in response.aiter_lines():
+                        if chunk:
+                            try:
+                                data = json.loads(chunk)
+                                if "response" in data:
+                                    yield data["response"]
+                            except:
+                                pass
 
 class OpenAIProvider:
     async def generate(self, prompt: str, temperature: float, max_length: int) -> str:
@@ -100,6 +123,11 @@ class OpenAIProvider:
                 if r.status_code != 200:
                     raise HTTPException(status_code=500, detail=f"OpenAI error: {r.text}")
                 return r.json()["choices"][0]["message"]["content"]
+                
+    async def generate_stream(self, prompt: str, temperature: float, max_length: int):
+        # Fallback to sync for now for other providers to avoid complexity
+        res = await self.generate(prompt, temperature, max_length)
+        yield res
 
 class GeminiProvider:
     async def generate(self, prompt: str, temperature: float, max_length: int) -> str:
@@ -120,6 +148,13 @@ class GeminiProvider:
                 if r.status_code != 200:
                     raise HTTPException(status_code=500, detail=f"Gemini error: {r.text}")
                 return r.json()["candidates"][0]["content"]["parts"][0]["text"]
+
+    async def generate_stream(self, prompt: str, temperature: float, max_length: int):
+        # Fallback to sync for now for other providers to avoid complexity
+        res = await self.generate(prompt, temperature, max_length)
+        yield res
+
+from fastapi.responses import StreamingResponse
 
 # Selección de proveedor
 def get_llm_provider() -> LLMProvider:
@@ -289,6 +324,77 @@ async def ask(
             print(f"--- Warning: Redis cache set failed: {e} ---")
 
     return {"answer": answer, "cached": False}
+
+@app.get("/ask/stream")
+async def ask_stream(query: str = Query(...)):
+    persona = RAG_CONFIG['persona']
+    k = RAG_CONFIG['rag_k']
+    max_context_chars = RAG_CONFIG['rag_max_context']
+    temperature = RAG_CONFIG['rag_temperature']
+    max_length = RAG_CONFIG['rag_max_length']
+
+    print(f"INFO: Querying Stream: {query} (k={k})")
+    
+    # Check Caché
+    normalized_query = _normalize_query(query)
+    cache_key = f"rag:cache:{normalized_query}"
+    if redis_client:
+        try:
+            cached_answer = redis_client.get(cache_key)
+            if cached_answer:
+                print("--- CACHE HIT (Stream): Devolviendo respuesta desde Redis ---")
+                async def cache_generator():
+                    yield cached_answer
+                return StreamingResponse(cache_generator(), media_type="text/plain")
+        except Exception as e:
+            pass
+
+    # 1) Embedding
+    try:
+        vec = list(_cached_encode(query))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Embedding error: {e}")
+
+    # 2) Buscar en Qdrant
+    try:
+        hits = await asyncio.to_thread(lambda: qdrant.search(
+            collection_name="docs",
+            query_vector=vec, limit=k, with_payload=True
+        ))
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Qdrant: {e}")
+
+    # 3) Construir Contexto
+    docs = []
+    for hit in hits:
+        text = _extract_text_from_hit(hit)
+        if text: docs.append(_truncate(text, 1500))
+
+    if docs:
+        combined = "\n\n---\n\n".join(docs)
+        if len(combined) > max_context_chars:
+            combined = _truncate(combined, max_context_chars)
+        system_instructions = RAG_CONFIG.get('system_instructions', '')
+        prompt = f"{persona}\n\n{system_instructions}\n\nCONTEXTO:\n{combined}\n\nPREGUNTA: {query}\nRESPUESTA:"
+    else:
+        prompt = f"{persona}\n\nNo se encontró información relevante en la base de conocimientos para responder a: '{query}'.\nResponde de forma educada indicando que no tienes esa información."
+
+    print("\n--- FINAL PROMPT (STREAM) ---\n", prompt, "\n---------------------")
+
+    async def stream_generator():
+        full_answer = ""
+        async for token in llm.generate_stream(prompt, temperature=temperature, max_length=max_length):
+            full_answer += token
+            yield token
+            
+        # 5) Guardar en Caché tras finalizar
+        if redis_client and full_answer:
+            try:
+                redis_client.setex(cache_key, 86400, full_answer)
+            except:
+                pass
+
+    return StreamingResponse(stream_generator(), media_type="text/plain")
 
 @app.post("/ingest")
 async def ingest(

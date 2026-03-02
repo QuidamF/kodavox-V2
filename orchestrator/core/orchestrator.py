@@ -201,32 +201,55 @@ class VoiceOrchestrator:
             print(f"[Orchestrator] User said: {text}")
             await self.bus.emit("transcription_final", {"text": text})
 
-            # 2. Consultar RAG
-            response_text = await asyncio.to_thread(self.rag_service.query, text)
-            await self.bus.emit("rag_response", {"text": response_text})
-
-            # 3. Sintetizar respuesta (TTS)
+            # 2. Consultar RAG y Sintetizar respuesta en Streaming (Pipeline Paralelo)
             await self.state_manager.set_state(AppState.SPEAKING)
-            # Enviar feedback de voz
-            
-            # Generar nuevo ID de stream (Si process interaction fue llamado, es la nueva verdad)
             self.current_stream_id += 1
             stream_id = self.current_stream_id
             
-            # Streaming tanto local como remoto (async)
-            stream_gen = self.tts_service.stream_audio_async(response_text)
-            
             import base64
-            # Procesamos el generador chunk a chunk
-            async for chunk in stream_gen:
-                # Verificar cancelación
+            import re
+            
+            sentence_buffer = ""
+            full_response = ""
+            # Buscar cortes de oración naturales (punto, coma fuerte, exclamación, interrogación, saltos)
+            sentence_end_pattern = re.compile(r'([.!?\n]+)')
+            
+            async for token in self.rag_service.query_stream(text):
                 if self.current_stream_id != stream_id:
                      print("[Orchestrator] Stream aborted during processing.")
                      break
                      
-                # Emitir al frontend
-                b64_chunk = base64.b64encode(chunk).decode('utf-8')
-                await self.bus.emit("audio_playback_chunk", {"data": b64_chunk, "stream_id": stream_id})
+                full_response += token
+                sentence_buffer += token
+                
+                # Check for end of sentence
+                match = sentence_end_pattern.search(sentence_buffer)
+                if match:
+                    end_idx = match.end()
+                    sentence_to_speak = sentence_buffer[:end_idx].strip()
+                    sentence_buffer = sentence_buffer[end_idx:] # remanente
+                    
+                    if len(sentence_to_speak) > 2:
+                        print(f"--- [TTS Chunk] Generando frase: {sentence_to_speak} ---")
+                        stream_gen = self.tts_service.stream_audio_async(sentence_to_speak)
+                        async for chunk in stream_gen:
+                            if self.current_stream_id != stream_id:
+                                break
+                            b64_chunk = base64.b64encode(chunk).decode('utf-8')
+                            await self.bus.emit("audio_playback_chunk", {"data": b64_chunk, "stream_id": stream_id})
+                            
+            # Enviar remanente de texto a sintetizar
+            if sentence_buffer.strip() and len(sentence_buffer.strip()) > 1 and self.current_stream_id == stream_id:
+                print(f"--- [TTS Chunk] Generando remanente: {sentence_buffer.strip()} ---")
+                stream_gen = self.tts_service.stream_audio_async(sentence_buffer.strip())
+                async for chunk in stream_gen:
+                    if self.current_stream_id != stream_id:
+                        break
+                    b64_chunk = base64.b64encode(chunk).decode('utf-8')
+                    await self.bus.emit("audio_playback_chunk", {"data": b64_chunk, "stream_id": stream_id})
+
+            # Emit final rag_response purely for the UI dashboard
+            await self.bus.emit("rag_response", {"text": full_response})
             
             # Para restaurar playback local Y remoto simultáneo sin re-escribir todo el audio framework:
             # Simplemente llamamos a speak() normal en un thread (que hace playback local)
