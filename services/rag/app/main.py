@@ -168,6 +168,7 @@ def _normalize_query(query: str) -> str:
 # --- Request Models ---
 class ConfigUpdate(BaseModel):
     persona: Optional[str] = None
+    system_instructions: Optional[str] = None
     rag_k: Optional[int] = None
     rag_max_context: Optional[int] = None
     rag_temperature: Optional[float] = None
@@ -189,6 +190,15 @@ async def update_rag_config(config: ConfigUpdate):
     global OLLAMA_TIMEOUT, llm
     OLLAMA_TIMEOUT = RAG_CONFIG['ollama_timeout']
     llm = get_llm_provider() # Re-instanciar con nuevo timeout
+    
+    # Invalidate Cache if persona or system instructions change
+    if redis_client:
+        try:
+            redis_client.flushdb()
+            print("--- Redis Cache Cleared (Config Update) ---")
+        except:
+            pass
+            
     return {"status": "success", "config": RAG_CONFIG}
 
 @app.get("/ask")
@@ -264,6 +274,8 @@ async def ask(
             f"Responde de forma educada indicando que no tienes esa información."
         )
 
+    print("\n--- FINAL PROMPT ---\n", prompt, "\n---------------------")
+
     # 4) Generar Respuesta con el proveedor seleccionado
     answer = await llm.generate(prompt, temperature=temperature, max_length=max_length)
 
@@ -311,6 +323,14 @@ async def ingest(
             
         qdrant.upsert(collection_name="docs", points=points)
         
+        # Invalidate Cache since knowledge base changed
+        if redis_client:
+            try:
+                redis_client.flushdb()
+                print("--- Redis Cache Cleared (Ingest) ---")
+            except:
+                pass
+        
         return {"status": "success", "chunks_processed": len(chunks)}
         
     except Exception as e:
@@ -327,6 +347,14 @@ async def purge_db():
                 distance=models.Distance.COSINE
             )
         )
+        # Invalidate Cache since knowledge base was purged
+        if redis_client:
+            try:
+                redis_client.flushdb()
+                print("--- Redis Cache Cleared (Purge) ---")
+            except:
+                pass
+                
         return {"status": "success", "message": "Knowledge Base purged."}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

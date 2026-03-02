@@ -26,8 +26,8 @@ class VoiceOrchestrator:
 
         self._loop = None
         self._silence_counter = 0
-        self._max_silence_chunks = 35 # ~2.8 segundos de silencio para cortar (increased)
-
+        self._max_silence_chunks = 15 # ~1.2 segundos de silencio para cortar
+        
         # Task Management
         self.current_task = None
         self.current_stream_id = 0 # Secuencia de stream id
