@@ -54,6 +54,8 @@ services:
     container_name: ollama
     ports:
       - "11434:11434"
+    environment:
+      - OLLAMA_KEEP_ALIVE=-1
     volumes:
       - ./services/rag/ollama:/root/.ollama
     restart: unless-stopped
@@ -73,6 +75,16 @@ services:
     volumes:
       - ./services/rag/qdrant_storage:/qdrant/storage
     restart: unless-stopped
+
+  redis-cache:
+    image: redis:alpine
+    container_name: redis-cache
+    ports:
+      - "6379:6379"
+    restart: unless-stopped
+    volumes:
+      - redis_data:/data
+    command: redis-server --save 60 1 --loglevel warning
 
   rag-api:
     build: ./services/rag/app
@@ -139,3 +151,4 @@ volumes:
   whisper_models:
   tts_models:
   huggingface_cache:
+  redis_data:
