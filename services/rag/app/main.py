@@ -7,6 +7,9 @@ import httpx
 from qdrant_client import QdrantClient
 from sentence_transformers import SentenceTransformer
 from pydantic import BaseModel # Import BaseModel
+import redis
+import json
+import re
 from database import init_db, get_config, update_config
 
 # Inicializar Base de Datos
@@ -42,6 +45,17 @@ qdrant = QdrantClient(url=QDRANT_HOST)
 embed_model = SentenceTransformer("BAAI/bge-m3")
 app = FastAPI(title="Multi-LLM RAG API")
 semaphore = asyncio.Semaphore(MAX_CONCURRENCY)
+
+# Redis client
+REDIS_HOST = os.getenv("REDIS_HOST", "redis-cache")
+REDIS_PORT = int(os.getenv("REDIS_PORT", "6379"))
+try:
+    redis_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=0, decode_responses=True)
+    redis_client.ping()
+    print("--- Connected to Redis Cache ---")
+except Exception as e:
+    print(f"--- Warning: Could not connect to Redis: {e} ---")
+    redis_client = None
 
 # --- Abstracción de Proveedores ---
 
@@ -144,6 +158,13 @@ def _truncate(s: str, max_chars: int) -> str:
     if not s: return ""
     return s if len(s) <= max_chars else s[:max_chars].rsplit(" ", 1)[0] + "..."
 
+def _normalize_query(query: str) -> str:
+    # Lowercase, trim, remove non-alphanumeric chars for robust exact matching
+    s = query.lower().strip()
+    s = re.sub(r'[^a-záéíóúñ0-9\s]', '', s)
+    s = re.sub(r'\s+', ' ', s)
+    return s.strip()
+
 # --- Request Models ---
 class ConfigUpdate(BaseModel):
     persona: Optional[str] = None
@@ -182,6 +203,19 @@ async def ask(
     max_length = RAG_CONFIG['rag_max_length']
 
     print(f"INFO: Querying: {query} (k={k})")
+    
+    # 0.5) Verificar Caché en Redis
+    normalized_query = _normalize_query(query)
+    cache_key = f"rag:cache:{normalized_query}"
+    
+    if redis_client:
+        try:
+            cached_answer = redis_client.get(cache_key)
+            if cached_answer:
+                print("--- CACHE HIT: Devolviendo respuesta desde Redis ---")
+                return {"answer": cached_answer, "cached": True}
+        except Exception as e:
+            print(f"--- Warning: Redis cache get failed: {e} ---")
     # 1) Embedding
     try:
         vec = list(_cached_encode(query))
@@ -233,7 +267,16 @@ async def ask(
     # 4) Generar Respuesta con el proveedor seleccionado
     answer = await llm.generate(prompt, temperature=temperature, max_length=max_length)
 
-    return {"answer": answer}
+    # 5) Guardar en Caché
+    if redis_client and answer:
+        try:
+            # TTL de 24 horas (86400 segundos)
+            redis_client.setex(cache_key, 86400, answer)
+            print("--- Respuesta guardada en cache de Redis ---")
+        except Exception as e:
+            print(f"--- Warning: Redis cache set failed: {e} ---")
+
+    return {"answer": answer, "cached": False}
 
 @app.post("/ingest")
 async def ingest(
