@@ -8,6 +8,7 @@ class Config:
     STT_URI = os.getenv("STT_URI", "ws://localhost:8000/api/v1/streaming")
     TTS_URI = os.getenv("TTS_URI", "http://localhost:8001/api/tts/stream")
     RAG_URI = os.getenv("RAG_URI", "http://localhost:8002/ask")
+    WAKEWORD_URI = os.getenv("WAKEWORD_URI", "ws://localhost:8003/streaming")
 
     # Wake Word (Local runtime)
     WAKE_WORD_MODEL = os.getenv("WAKE_WORD_MODEL", "hey_jarvis")

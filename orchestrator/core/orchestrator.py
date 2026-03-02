@@ -30,7 +30,7 @@ class VoiceOrchestrator:
 
         # Task Management
         self.current_task = None
-        self.current_stream_id = 0.0 # Timestamp del stream activo
+        self.current_stream_id = 0 # Secuencia de stream id
         self.interruption_lock = asyncio.Lock()
 
         # Registrar eventos
@@ -91,7 +91,10 @@ class VoiceOrchestrator:
                 self.current_task = asyncio.create_task(self.process_interaction())
 
     async def cancel_current_interaction(self):
-        """Cancela la interacción actual si existe."""
+        """Cancela la interacción actual si existe y silencia el frontend."""
+        # Incrementar stream_id para invalidar cualquier generador asíncrono en curso
+        self.current_stream_id += 1
+        
         async with self.interruption_lock:
             if self.current_task and not self.current_task.done():
                 print("[Orchestrator] Cancelling current interaction (Barge-in)...")
@@ -100,10 +103,13 @@ class VoiceOrchestrator:
                     await self.current_task
                 except asyncio.CancelledError:
                     print("[Orchestrator] Interaction cancelled successfully.")
+                except Exception as e:
+                    print(f"[Orchestrator] Error cancelling task: {e}")
                 self.current_task = None
-                
-                # Emitir evento de cancelación al frontend para frenar audio
-                await self.bus.emit("audio_stop", {})
+        
+        # Siempre emitir audio_stop al frontend para limpiar buffers
+        print("[Orchestrator] Sending audio_stop to frontend.")
+        await self.bus.emit("audio_stop", {"stream_id": self.current_stream_id})
 
     async def handle_wakeword(self, data):
         """Manejador disparado cuando se detecta la palabra clave."""
@@ -124,6 +130,7 @@ class VoiceOrchestrator:
     async def handle_manual_listen(self, data):
         """Fuerza al sistema al estado de escucha de usuario."""
         print("[Orchestrator] Manual listen triggered.")
+        await self.cancel_current_interaction()
         await self.state_manager.set_state(AppState.LISTENING_USER)
         self._silence_counter = 0
         await self.stt_service.connect()
@@ -150,7 +157,7 @@ class VoiceOrchestrator:
             await self.cancel_current_interaction()
             
             # Generar nuevo ID de stream
-            self.current_stream_id = time.time()
+            self.current_stream_id += 1
             stream_id = self.current_stream_id
 
             # Same streaming logic as process_interaction
@@ -170,6 +177,7 @@ class VoiceOrchestrator:
         text = data.get("text", "")
         if text:
             print(f"[Orchestrator] Manual RAG query: {text}")
+            await self.cancel_current_interaction()
             response = await asyncio.to_thread(self.rag_service.query, text)
             await self.bus.emit("rag_response", {"text": response})
 
@@ -202,7 +210,7 @@ class VoiceOrchestrator:
             # Enviar feedback de voz
             
             # Generar nuevo ID de stream (Si process interaction fue llamado, es la nueva verdad)
-            self.current_stream_id = time.time()
+            self.current_stream_id += 1
             stream_id = self.current_stream_id
             
             # Streaming tanto local como remoto (async)

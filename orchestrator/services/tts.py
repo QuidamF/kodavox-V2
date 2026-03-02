@@ -31,15 +31,19 @@ class TTSServiceAdapter:
         import httpx
         try:
             payload = {
-                "text": text,
-                "stream": True # Solicitamos stream al backend TTS
+                "text": text
             }
-            if Config.TTS_VOICE_FILE:
-                payload["voice_sample"] = Config.TTS_VOICE_FILE
             
             chunk_count = 0
+            # Ensure we use the exact /api/tts/stream endpoint and not the root URI
+            # Config.TTS_URI is typically `http://localhost:8004/api/tts/batch` or similar
+            # So we build the path to `/api/tts/stream` directly based on the host
+            import urllib.parse
+            parsed_uri = urllib.parse.urlparse(self.uri)
+            stream_uri = f"{parsed_uri.scheme}://{parsed_uri.netloc}/api/tts/stream"
+
             async with httpx.AsyncClient() as client:
-                async with client.stream("POST", self.uri, json=payload, timeout=30.0) as response:
+                async with client.stream("POST", stream_uri, json=payload, timeout=30.0) as response:
                     response.raise_for_status()
                     async for chunk in response.aiter_bytes(chunk_size=4096):
                         if chunk:

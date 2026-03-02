@@ -4,7 +4,12 @@ from typing import Callable, Any
 
 class EventBus:
     def __init__(self):
-        self.sio = socketio.AsyncServer(async_mode='asgi', cors_allowed_origins='*')
+        self.sio = socketio.AsyncServer(
+            async_mode='asgi', 
+            cors_allowed_origins='*',
+            ping_timeout=60,
+            ping_interval=25
+        )
         self.app = socketio.ASGIApp(self.sio)
         self.listeners = {}
 
@@ -42,10 +47,14 @@ class EventBus:
 
         # 2. Emitir a clientes socketio (UI) de forma NO BLOQUEANTE (Fire-and-forget)
         # Usamos create_task para que si el socket cuelga, no detenga el sistema.
-        try:
-            await self.sio.emit(event, data)
-        except Exception as e:
-             print(f"[EventBus] SocketIO emit error: {e}")
+        # EVITAMOS enviar audio_chunk por SocketIO ya que contiene bytes binarios crudos 
+        # que provocan errores de encoding ('TypeError: can only concatenate str (not "bytes") to str') 
+        # en la libreria engineio durante el polling transport, y ademamas satura el frontend.
+        if event not in ["audio_chunk"]:
+            try:
+                await self.sio.emit(event, data)
+            except Exception as e:
+                 print(f"[EventBus] SocketIO emit error: {e}")
 
     def on(self, event: str, callback: Callable):
         """Registra un listener interno para un evento."""

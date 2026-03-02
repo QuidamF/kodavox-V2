@@ -151,6 +151,7 @@ async def get_config():
         "STT_LANGUAGE": os.getenv("LANGUAGE", "es"),
         "OPENAI_API_KEY": os.getenv("OPENAI_API_KEY", ""),
         "GEMINI_API_KEY": os.getenv("GEMINI_API_KEY", ""),
+        "HEALTH_CHECK_INTERVAL": os.getenv("HEALTH_CHECK_INTERVAL", "30"),
     }
 
 @app.post("/config")
@@ -253,7 +254,8 @@ async def check_services():
     services = {
         "stt": "http://stt-service:8000/health",
         "tts": "http://tts-service:8000/",
-        "rag": "http://rag-api:8000/health" 
+        "rag": "http://rag-api:8000/health",
+        "wakeword": "http://wakeword-service:8003/health"
     }
     results = {}
     async with httpx.AsyncClient(timeout=2) as client:

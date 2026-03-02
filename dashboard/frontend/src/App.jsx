@@ -18,19 +18,25 @@ import {
   Zap,
   Terminal,
   MessageSquare,
+  Menu,
+  X,
+  Volume1,
   Activity as StatusIcon
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
+import TTSTest from './TTSTest';
 
 const API_BASE = "http://localhost:8080";
 const ORCHESTRATOR_SOCKET = "http://localhost:5000"; // Puerto por defecto del SocketIO del orquestador
 
 function App() {
   const [activeTab, setActiveTab] = useState('status');
+  const [isMenuOpen, setIsMenuOpen] = useState(false);
   const [files, setFiles] = useState([]);
   const [voices, setVoices] = useState([]);
   const [config, setConfig] = useState({});
   const [health, setHealth] = useState({});
+  const [healthInterval, setHealthInterval] = useState(30);
   const [loading, setLoading] = useState(false);
   const [msg, setMsg] = useState(null);
   const [testResults, setTestResults] = useState({});
@@ -67,10 +73,11 @@ function App() {
   const audioContextRef = useRef(null);
   const nextStartTimeRef = useRef(0);
   const activeStreamIdRef = useRef(0);
+  const activeSourcesRef = useRef([]);
 
   useEffect(() => {
     fetchData();
-    const interval = setInterval(fetchHealth, 5000);
+    // Health polling is now managed via healthInterval state and a dedicated effect
 
     // Conexión SocketIO
     socketRef.current = io(ORCHESTRATOR_SOCKET);
@@ -103,22 +110,35 @@ function App() {
     });
 
     socketRef.current.on('rag_response', (data) => {
-      setLastResponse(data.answer);
-      addLog(`AI: ${data.answer}`);
+      const answer = data.text || data.answer;
+      setLastResponse(answer);
+      addLog(`AI: ${answer}`);
     });
 
-    socketRef.current.on('audio_stop', () => {
+    socketRef.current.on('audio_stop', (data) => {
       console.log("[Audio] Stopping playback (Barge-in)");
-      // Invalidate current stream: Force it to be effectively "infinite" future relative to any old stream in seconds, 
-      // OR just sync to current time in seconds.
-      activeStreamIdRef.current = Date.now() / 1000.0;
+      // Invalidate current stream: Sync to the explicitly cancelled stream_id if provided
+      if (data && data.stream_id) {
+        activeStreamIdRef.current = data.stream_id;
+      } else {
+        activeStreamIdRef.current += 0.5; // Fallback
+      }
 
+      // Stop all currently playing and scheduled sources
+      if (activeSourcesRef.current) {
+        activeSourcesRef.current.forEach(source => {
+          try {
+            source.stop();
+            source.disconnect();
+          } catch (e) { }
+        });
+        activeSourcesRef.current = [];
+      }
+
+      // Reset scheduling time, keep context alive
       if (audioContextRef.current) {
-        // Force Close immediately - no promise wait needed if we nullify
-        try {
-          audioContextRef.current.close();
-        } catch (e) { console.error("Error closing ctx", e); }
-        audioContextRef.current = null;
+        nextStartTimeRef.current = audioContextRef.current.currentTime;
+      } else {
         nextStartTimeRef.current = 0;
       }
     });
@@ -127,16 +147,38 @@ function App() {
       try {
         const streamId = data.stream_id || 0;
 
-        // Strict De-duplication:
-        // Use epsilon for float comparison safety if needed, but < is usually fine.
-        if (streamId < activeStreamIdRef.current) {
-          // console.warn(`[Audio] Dropping zombie chunk ${streamId} < ${activeStreamIdRef.current}`);
+        // Strict De-duplication + Backend Restart Detection
+        const streamDiff = activeStreamIdRef.current - streamId;
+
+        // If the streamId is older but the gap is enormous (> 100000), it means the backend restarted
+        // and its internal stream_id counter reset to 0, while the frontend still held a large number (like a Unix timestamp).
+        if (streamId < activeStreamIdRef.current && Math.abs(streamDiff) < 100000) {
+          console.warn(`[Audio] Dropping zombie chunk: ${streamId} is older than active ${activeStreamIdRef.current}`);
           return;
+        } else if (streamId < activeStreamIdRef.current && Math.abs(streamDiff) >= 100000) {
+          console.log(`[Audio] Backend restart detected (Huge ID drop). Resetting stream counter to ${streamId}`);
+          activeStreamIdRef.current = streamId - 1; // Force acceptance
         }
 
-        // Update active stream if newer
+        // Detect new stream and force reset if needed (Self-Correcting Stream Switch)
         if (streamId > activeStreamIdRef.current) {
+          console.log(`[Audio] New stream detected: ${streamId}. Resetting buffers.`);
           activeStreamIdRef.current = streamId;
+
+          // Stop old sources without destroying the context
+          activeSourcesRef.current.forEach(source => {
+            try {
+              source.stop();
+              source.disconnect();
+            } catch (e) { }
+          });
+          activeSourcesRef.current = [];
+
+          if (audioContextRef.current) {
+            nextStartTimeRef.current = audioContextRef.current.currentTime;
+          } else {
+            nextStartTimeRef.current = 0;
+          }
         }
 
         if (!audioContextRef.current) {
@@ -177,6 +219,12 @@ function App() {
         const startAt = nextStartTimeRef.current;
         source.start(startAt);
 
+        // Track the source and clean it up when ended
+        activeSourcesRef.current.push(source);
+        source.onended = () => {
+          activeSourcesRef.current = activeSourcesRef.current.filter(s => s !== source);
+        };
+
         nextStartTimeRef.current = startAt + float32Buffer.duration;
 
       } catch (e) {
@@ -185,13 +233,18 @@ function App() {
     });
 
     return () => {
-      clearInterval(interval);
       if (socketRef.current) socketRef.current.disconnect();
-      if (audioContextRef.current) {
-        audioContextRef.current.close();
+      if (audioContextRef.current && audioContextRef.current.state !== 'closed') {
+        try { audioContextRef.current.close(); } catch (e) { }
       }
     };
   }, []);
+
+  // Dedicated effect for health polling
+  useEffect(() => {
+    const timer = setInterval(fetchHealth, healthInterval * 1000);
+    return () => clearInterval(timer);
+  }, [healthInterval]);
 
   const addLog = (msg) => {
     const time = new Date().toLocaleTimeString();
@@ -209,6 +262,9 @@ function App() {
       setFiles(filesRes.data);
       setConfig(configRes.data);
       setVoices(voicesRes.data);
+      if (configRes.data.HEALTH_CHECK_INTERVAL) {
+        setHealthInterval(parseInt(configRes.data.HEALTH_CHECK_INTERVAL));
+      }
       fetchRagConfig();
       fetchTtsConfig();
       fetchSttConfig();
@@ -453,16 +509,22 @@ function App() {
         break;
       case 'chat':
         if (!debugText) return;
+        setLastTranscript(debugText);
+        setLastResponse("");
         socketRef.current.emit('process_text', { text: debugText });
         showMsg(`Enviado al chat: ${debugText}`);
         break;
       case 'tts':
         if (!debugText) return;
+        setLastTranscript("");
+        setLastResponse("");
         socketRef.current.emit('speak_text', { text: debugText });
         showMsg("Enviado a TTS");
         break;
       case 'rag':
         if (!debugText) return;
+        setLastTranscript(debugText);
+        setLastResponse("");
         socketRef.current.emit('query_rag', { text: debugText });
         showMsg("Consultando RAG...");
         break;
@@ -470,47 +532,100 @@ function App() {
   };
 
   return (
-    <div className="min-h-screen p-8 max-w-6xl mx-auto">
+    <div className="min-h-screen p-4 md:p-8 max-w-6xl mx-auto">
       {/* Header */}
-      <header className="flex justify-between items-center mb-12">
-        <div>
-          <h1 className="text-4xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-blue-400 to-purple-500">
-            Voice Orchestrator
+      <header className="flex flex-col md:flex-row justify-between items-center mb-8 md:mb-12 gap-6 md:gap-0">
+        <div className="text-center md:text-left">
+          <h1 className="text-4xl md:text-6xl font-black tracking-tighter bg-clip-text text-transparent bg-gradient-to-r from-orange-400 via-pink-500 to-purple-600 animate-gradient-x pb-2">
+            SAMANTA
           </h1>
-          <p className="text-gray-400 mt-2">Panel de Control y Gestión Centralizada</p>
+          <p className="text-gray-600 mt-2 text-lg font-light tracking-wide">Tu Asistente Inteligente</p>
         </div>
-        <div className="flex gap-4">
+        <div className="flex flex-wrap justify-center items-center gap-4">
+          <button
+            onClick={fetchHealth}
+            className="p-2 hover:bg-white/80 rounded-full transition-colors order-last md:order-none"
+            title="Validar conexión ahora"
+          >
+            <RefreshCw size={18} className={loading ? 'animate-spin' : ''} />
+          </button>
           {Object.entries(health).map(([svc, status]) => (
-            <div key={svc} className="flex items-center gap-2 px-3 py-1 rounded-full border border-white/10 bg-white/5 text-sm">
+            <div key={svc} className="flex items-center gap-2 px-3 py-1 rounded-full border border-gray-300 bg-white/60 text-sm">
               <div className={`w-2 h-2 rounded-full ${status === 'online' ? 'bg-green-500 shadow-[0_0_8px_#22c55e]' :
                 status === 'offline' ? 'bg-red-500' : 'bg-yellow-500'
                 }`} />
-              <span className="capitalize text-gray-300">{svc}</span>
+              <span className="capitalize text-gray-900">{svc}</span>
             </div>
           ))}
         </div>
       </header>
 
       {/* Tabs */}
-      <nav className="flex gap-2 p-1 glass rounded-xl mb-8 w-fit">
-        {[
-          { id: 'status', icon: StatusIcon, label: 'Estado' },
-          { id: 'rag', icon: Database, label: 'Base de Datos (RAG)' },
-          { id: 'config', icon: Settings, label: 'Configuración' },
-          { id: 'tests', icon: Cpu, label: 'Pruebas' },
-          { id: 'debug', icon: Terminal, label: 'Consola / Debug' }
-        ].map(tab => (
+      {/* Navigation - Responsive Wrapper */}
+      <div className="relative mb-8 z-50">
+        {/* Mobile Menu Button */}
+        <div className="md:hidden flex justify-end mb-4">
           <button
-            key={tab.id}
-            onClick={() => setActiveTab(tab.id)}
-            className={`flex items-center gap-2 px-6 py-2 rounded-lg transition-all ${activeTab === tab.id ? 'bg-blue-500 text-white shadow-lg' : 'hover:bg-white/5 text-gray-400'
-              }`}
+            onClick={() => setIsMenuOpen(!isMenuOpen)}
+            className="p-2 rounded-lg bg-white/60 text-gray-800 shadow-sm border border-gray-300"
           >
-            <tab.icon size={18} />
-            {tab.label}
+            {isMenuOpen ? <X size={24} /> : <Menu size={24} />}
           </button>
-        ))}
-      </nav>
+        </div>
+
+        {/* Mobile Dropdown Menu */}
+        <AnimatePresence>
+          {isMenuOpen && (
+            <motion.nav
+              initial={{ height: 0, opacity: 0 }}
+              animate={{ height: "auto", opacity: 1 }}
+              exit={{ height: 0, opacity: 0 }}
+              className="md:hidden flex flex-col gap-2 p-2 glass rounded-xl overflow-hidden mb-4"
+            >
+              {[
+                { id: 'status', icon: StatusIcon, label: 'Estado' },
+                { id: 'rag', icon: Database, label: 'Base de Datos (RAG)' },
+                { id: 'config', icon: Settings, label: 'Configuración' },
+                { id: 'tests', icon: Cpu, label: 'Pruebas' },
+                { id: 'debug', icon: Terminal, label: 'Consola / Debug' },
+                { id: 'ttstest', icon: Volume1, label: 'Test TTS' }
+              ].map(tab => (
+                <button
+                  key={tab.id}
+                  onClick={() => { setActiveTab(tab.id); setIsMenuOpen(false); }}
+                  className={`flex items-center gap-2 px-6 py-3 rounded-lg transition-all w-full text-left ${activeTab === tab.id ? 'bg-orange-500 text-white' : 'hover:bg-white/60 text-gray-600'
+                    }`}
+                >
+                  <tab.icon size={18} className={activeTab === tab.id ? "text-white" : "text-gray-500"} />
+                  {tab.label}
+                </button>
+              ))}
+            </motion.nav>
+          )}
+        </AnimatePresence>
+
+        {/* Desktop Navigation (Hidden on Mobile) */}
+        <nav className="hidden md:flex gap-2 p-1 glass rounded-xl w-fit">
+          {[
+            { id: 'status', icon: StatusIcon, label: 'Estado' },
+            { id: 'rag', icon: Database, label: 'Base de Datos (RAG)' },
+            { id: 'config', icon: Settings, label: 'Configuración' },
+            { id: 'tests', icon: Cpu, label: 'Pruebas' },
+            { id: 'debug', icon: Terminal, label: 'Consola / Debug' },
+            { id: 'ttstest', icon: Volume1, label: 'Test TTS Aislado' }
+          ].map(tab => (
+            <button
+              key={tab.id}
+              onClick={() => setActiveTab(tab.id)}
+              className={`flex items-center gap-2 px-6 py-2 rounded-lg transition-all ${activeTab === tab.id ? 'bg-orange-500 text-white shadow-lg shadow-orange-500/20' : 'hover:bg-white/60 text-gray-600'
+                }`}
+            >
+              <tab.icon size={18} className={activeTab === tab.id ? "text-white" : "text-gray-500"} />
+              {tab.label}
+            </button>
+          ))}
+        </nav>
+      </div>
 
       {/* Main Content */}
       <main className="grid grid-cols-1 gap-8">
@@ -525,12 +640,22 @@ function App() {
               {/* Orquestador Realtime State */}
               <div className="glass-card md:col-span-1">
                 <h3 className="text-lg font-semibold mb-6 flex items-center gap-2">
-                  <Zap size={20} className="text-yellow-400" /> Motor de Voz
+                  <Zap size={20} className="text-amber-400" /> Motor de Voz
                 </h3>
                 <div className="flex flex-col items-center justify-center py-8">
-                  <div className={`text-6xl mb-4 font-black tracking-tighter ${orchState === 'OFFLINE' ? 'text-gray-700' : 'text-blue-500'
+                  <div className={`text-3xl mb-4 font-black tracking-tighter break-words text-center px-2 ${orchState === 'OFFLINE' ? 'text-gray-700' : 'text-orange-500'
                     }`}>
-                    {orchState}
+                    {(() => {
+                      const stateMap = {
+                        'IDLE': 'Inactivo',
+                        'LISTENING_WAKEWORD': 'Esperando',
+                        'LISTENING_USER': 'Escuchando',
+                        'PROCESSING': 'Procesando',
+                        'SPEAKING': 'Hablando',
+                        'OFFLINE': 'Desconectado'
+                      };
+                      return stateMap[orchState] || orchState;
+                    })()}
                   </div>
                   <p className="text-gray-500 text-sm">Estado actual del flujo de IA</p>
 
@@ -540,16 +665,20 @@ function App() {
                       <Mic size={16} className={audioEnergy > 5 ? "text-green-400" : "text-gray-600"} />
                       <span className="text-xs text-gray-500 uppercase font-bold">Nivel Micrófono</span>
                     </div>
-                    <div className="w-full h-2 bg-white/5 rounded-full overflow-hidden">
+                    <div className="w-full h-2 bg-white/60 rounded-full overflow-hidden">
                       <motion.div
-                        className="h-full bg-gradient-to-r from-green-500 to-emerald-400"
+                        className="h-full bg-gradient-to-r from-orange-500 to-pink-500"
                         animate={{ width: `${audioEnergy}%` }}
                         transition={{ type: "tween", ease: "linear", duration: 0.05 }}
                       />
                     </div>
                   </div>
                 </div>
-                <div className="mt-4 pt-4 border-t border-white/5 space-y-3">
+                <div className="mt-4 pt-4 border-t border-gray-200 space-y-3">
+                  <div className="flex justify-between text-sm">
+                    <span className="text-gray-500 uppercase tracking-wider font-bold text-[10px]">Wake Word</span>
+                    <span className={health.wakeword === 'online' ? 'text-green-500' : 'text-red-500'}>{health.wakeword || 'pending'}</span>
+                  </div>
                   <div className="flex justify-between text-sm">
                     <span className="text-gray-500 uppercase tracking-wider font-bold text-[10px]">STT (Whisper)</span>
                     <span className={health.stt === 'online' ? 'text-green-500' : 'text-red-500'}>{health.stt || 'pending'}</span>
@@ -568,27 +697,36 @@ function App() {
               {/* Live Chat View */}
               <div className="glass-card md:col-span-2">
                 <h3 className="text-lg font-semibold mb-4 flex items-center gap-2">
-                  <MessageSquare size={20} className="text-blue-400" /> Conversación Activa
+                  <MessageSquare size={20} className="text-orange-400" /> Conversación Activa
                 </h3>
                 <div className="space-y-4">
-                  <div className="p-4 rounded-xl bg-white/5 border border-white/5 min-h-[80px]">
-                    <span className="text-[10px] text-blue-400 font-bold uppercase block mb-1">Último que escuché</span>
-                    <p className="text-lg text-gray-200">{lastTranscript || "Esperando voz..."}</p>
+                  <div className="p-4 rounded-xl bg-white/60 border border-gray-200 min-h-[80px]">
+                    <span className="text-[10px] text-orange-400 font-bold uppercase block mb-1">Último que escuché</span>
+                    <p className="text-lg text-gray-800">{lastTranscript || "Esperando voz..."}</p>
                   </div>
-                  <div className="p-4 rounded-xl bg-purple-500/5 border border-purple-500/10 min-h-[80px]">
-                    <span className="text-[10px] text-purple-400 font-bold uppercase block mb-1">Respuesta del Robot</span>
-                    <p className="text-lg text-purple-100">{lastResponse || "Sin respuesta todavía"}</p>
+                  <div className="p-4 rounded-xl bg-pink-500/5 border border-pink-500/10 min-h-[80px]">
+                    <span className="text-[10px] text-pink-400 font-bold uppercase flex items-center gap-2 mb-1">
+                      Respuesta de Samanta
+                      {orchState === 'PROCESSING' && (
+                        <motion.div
+                          animate={{ opacity: [0.4, 1, 0.4] }}
+                          transition={{ duration: 1, repeat: Infinity }}
+                          className="w-2 h-2 rounded-full bg-green-500 shadow-[0_0_8px_#22c55e]"
+                        />
+                      )}
+                    </span>
+                    <p className="text-lg text-pink-100">{lastResponse || "Sin respuesta todavía"}</p>
                   </div>
                 </div>
 
                 <h3 className="text-lg font-semibold mt-8 mb-4 flex items-center gap-2">
-                  <Terminal size={20} className="text-gray-400" /> Eventos del Sistema
+                  <Terminal size={20} className="text-gray-600" /> Eventos del Sistema
                 </h3>
-                <div className="bg-black/40 rounded-xl p-4 font-mono text-xs overflow-y-auto h-[160px] border border-white/5">
+                <div className="bg-black/40 rounded-xl p-4 font-mono text-xs overflow-y-auto h-[160px] border border-gray-200">
                   {logs.map((log, i) => (
                     <div key={i} className="mb-1">
                       <span className="text-gray-600 mr-2">[{log.time}]</span>
-                      <span className="text-gray-300">{log.msg}</span>
+                      <span className="text-gray-900">{log.msg}</span>
                     </div>
                   ))}
                   {logs.length === 0 && <span className="text-gray-700 italic">Iniciando monitor de eventos...</span>}
@@ -614,7 +752,7 @@ function App() {
                   <div key={mod.id} className="glass-card flex flex-col justify-between">
                     <div>
                       <div className="flex items-center gap-3 mb-4">
-                        <div className="p-2 rounded-lg bg-white/5 text-blue-400">
+                        <div className="p-2 rounded-lg bg-white/60 text-orange-400">
                           <mod.icon size={20} />
                         </div>
                         <h4 className="font-bold">{mod.label}</h4>
@@ -634,7 +772,7 @@ function App() {
                     <button
                       onClick={() => runTest(mod.id)}
                       disabled={testing === mod.id}
-                      className="w-full py-2 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 transition-all text-sm font-semibold flex items-center justify-center gap-2"
+                      className="w-full py-2 rounded-xl bg-white/60 hover:bg-white/80 border border-gray-300 transition-all text-sm font-semibold flex items-center justify-center gap-2"
                     >
                       {testing === mod.id ? <RefreshCw size={14} className="animate-spin" /> : <Activity size={14} />}
                       {testing === mod.id ? "Ejecutando..." : "Correr Diagnóstico"}
@@ -674,9 +812,9 @@ function App() {
                 <div className="md:col-span-2 glass-card">
                   <div className="flex justify-between items-center mb-6">
                     <h3 className="text-xl font-semibold flex items-center gap-2">
-                      <Files size={20} className="text-blue-400" /> Archivos del Conocimiento
+                      <Files size={20} className="text-orange-400" /> Archivos del Conocimiento
                     </h3>
-                    <button onClick={fetchData} className="p-2 hover:bg-white/10 rounded-full transition-colors">
+                    <button onClick={fetchData} className="p-2 hover:bg-white/80 rounded-full transition-colors">
                       <RefreshCw size={18} className={loading ? 'animate-spin' : ''} />
                     </button>
                   </div>
@@ -686,9 +824,9 @@ function App() {
                       <div className="text-center py-12 text-gray-500 italic">No hay archivos cargados.</div>
                     ) : (
                       files.map(file => (
-                        <div key={file.name} className="flex justify-between items-center p-4 rounded-xl border border-white/5 bg-white/2 hover:bg-white/5 transition-all group">
+                        <div key={file.name} className="flex justify-between items-center p-4 rounded-xl border border-gray-200 bg-white/80 hover:bg-white/60 transition-all group">
                           <div className="flex items-center gap-3">
-                            <div className="p-2 rounded-lg bg-blue-500/10 text-blue-400">
+                            <div className="p-2 rounded-lg bg-orange-500/10 text-orange-400">
                               <Files size={20} />
                             </div>
                             <div>
@@ -710,22 +848,16 @@ function App() {
 
               </div>
 
-              <div className="glass-card flex flex-col items-center justify-center text-center group border-dashed hover:border-blue-500/50">
-                <div className="p-6 rounded-full bg-blue-500/5 text-blue-400 group-hover:scale-110 transition-transform mb-4">
+              <div className="glass-card flex flex-col items-center justify-center text-center group border-dashed hover:border-orange-500/50">
+                <div className="p-6 rounded-full bg-orange-500/5 text-orange-400 group-hover:scale-110 transition-transform mb-4">
                   <Upload size={48} />
                 </div>
                 <h4 className="text-lg font-medium mb-1">Subir Información</h4>
-                <div className="glass-card flex flex-col items-center justify-center text-center group border-dashed hover:border-blue-500/50">
-                  <div className="p-6 rounded-full bg-blue-500/5 text-blue-400 group-hover:scale-110 transition-transform mb-4">
-                    <Upload size={48} />
-                  </div>
-                  <h4 className="text-lg font-medium mb-1">Subir Información</h4>
-                  <p className="text-sm text-gray-500 mb-6">PDF, TXT, MD para el cerebro</p>
-                  <label className="bg-blue-600 hover:bg-blue-500 px-8 py-3 rounded-xl font-semibold cursor-pointer shadow-lg shadow-blue-500/20 transition-all">
-                    Explorar
-                    <input type="file" className="hidden" onChange={handleUpload} />
-                  </label>
-                </div>
+                <p className="text-sm text-gray-500 mb-6">PDF, TXT, MD para el cerebro</p>
+                <label className="bg-orange-600 hover:bg-orange-500 px-8 py-3 rounded-xl font-semibold cursor-pointer shadow-lg shadow-orange-500/20 transition-all">
+                  Explorar
+                  <input type="file" className="hidden" onChange={handleUpload} />
+                </label>
               </div>
 
               {/* Danger Zone RAG */}
@@ -758,31 +890,34 @@ function App() {
               {/* Comportamiento y Personalidad */}
               <div className="glass-card">
                 <h3 className="text-xl font-semibold mb-6 flex items-center gap-2">
-                  <MessageSquare size={20} className="text-blue-400" /> Personalidad del Agente
+                  <MessageSquare size={20} className="text-pink-400" /> Personalidad del Agente
                 </h3>
                 <div className="space-y-4">
                   <div>
-                    <label className="block text-sm text-gray-400 mb-2">Instrucciones de Sistema (Roleplay)</label>
+                    <label className="block text-sm text-gray-600 mb-2">Instrucciones de Sistema (Roleplay)</label>
                     <textarea
                       value={ragConfig.persona}
                       onChange={(e) => setRagConfig({ ...ragConfig, persona: e.target.value })}
-                      className="w-full bg-white/5 border border-white/10 rounded-xl p-4 outline-none focus:border-blue-500 min-h-[120px] text-gray-200"
+                      className="w-full bg-white/60 border border-gray-300 rounded-xl p-4 outline-none focus:border-blue-500 min-h-[120px] text-gray-800"
                       placeholder="Ej: Eres un asistente sarcástico y divertido..."
                     />
                   </div>
                   <div>
-                    <label className="block text-sm text-gray-400 mb-2">Instrucciones del Sistema (Cómo usar el RAG)</label>
+                    <label className="block text-sm text-gray-600 mb-2">Instrucciones del Sistema (Cómo usar el RAG)</label>
                     <textarea
                       value={ragConfig.system_instructions}
                       onChange={(e) => setRagConfig({ ...ragConfig, system_instructions: e.target.value })}
-                      className="w-full bg-white/5 border border-white/10 rounded-xl p-4 outline-none focus:border-purple-500 min-h-[140px] text-gray-200 font-mono text-sm"
+                      className="w-full bg-white/60 border border-gray-300 rounded-xl p-4 outline-none focus:border-purple-500 min-h-[140px] text-gray-800 font-mono text-sm"
                       placeholder="Ej: INSTRUCCIONES CRÍTICAS:\n1. SOLO puedes responder usando la información del CONTEXTO...\n2. Si la pregunta NO puede responderse..."
                     />
+                    <p className="text-[10px] text-blue-500 mt-2 italic flex items-center gap-1">
+                      <AlertCircle size={10} /> Tip: Según políticas de Meta, para WhatsApp/Messenger descríbete como un "Asistente de agendamiento de citas".
+                    </p>
                   </div>
                   <div className="flex justify-end">
                     <button
                       onClick={() => saveRagConfig(ragConfig)}
-                      className="px-6 py-2 rounded-xl bg-blue-600 hover:bg-blue-500 text-white font-bold transition-all flex items-center gap-2"
+                      className="px-6 py-2 rounded-xl bg-orange-600 hover:bg-orange-500 text-white font-bold transition-all flex items-center gap-2"
                     >
                       <Save size={18} /> Guardar Personalidad
                     </button>
@@ -794,52 +929,43 @@ function App() {
                 {/* Parámetros Técnicos RAG */}
                 <div className="glass-card">
                   <h3 className="text-xl font-semibold mb-6 flex items-center gap-2">
-                    <Database size={20} className="text-blue-400" /> Parámetros de RAG
+                    <Database size={20} className="text-orange-400" /> Parámetros de RAG
                   </h3>
                   <div className="space-y-4">
                     <div className="grid grid-cols-2 gap-4">
                       <div>
-                        <label className="block text-sm text-gray-400 mb-1">K (Docs a recuperar)</label>
+                        <label className="block text-sm text-gray-600 mb-1">K (Docs a recuperar)</label>
                         <input
                           type="number"
                           value={ragConfig.rag_k}
                           onChange={(e) => setRagConfig({ ...ragConfig, rag_k: parseInt(e.target.value) })}
-                          className="w-full bg-white/5 border border-white/10 rounded-xl p-2 outline-none focus:border-blue-500"
+                          className="w-full bg-white/60 border border-gray-300 rounded-xl p-2 outline-none focus:border-blue-500"
                         />
                       </div>
                       <div>
-                        <label className="block text-sm text-gray-400 mb-1">Temperatura</label>
+                        <label className="block text-sm text-gray-600 mb-1">Temperatura</label>
                         <input
                           type="number"
                           step="0.1"
                           value={ragConfig.rag_temperature}
                           onChange={(e) => setRagConfig({ ...ragConfig, rag_temperature: parseFloat(e.target.value) })}
-                          className="w-full bg-white/5 border border-white/10 rounded-xl p-2 outline-none focus:border-blue-500"
+                          className="w-full bg-white/60 border border-gray-300 rounded-xl p-2 outline-none focus:border-blue-500"
                         />
                       </div>
                     </div>
                     <div>
-                      <label className="block text-sm text-gray-400 mb-1">Máximo Contexto (Caracteres)</label>
+                      <label className="block text-sm text-gray-600 mb-1">Máximo Contexto (Caracteres)</label>
                       <input
                         type="number"
                         value={ragConfig.rag_max_context}
                         onChange={(e) => setRagConfig({ ...ragConfig, rag_max_context: parseInt(e.target.value) })}
-                        className="w-full bg-white/5 border border-white/10 rounded-xl p-2 outline-none focus:border-blue-500"
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-sm text-gray-400 mb-1">Máxima Longitud Respuesta</label>
-                      <input
-                        type="number"
-                        value={ragConfig.rag_max_length}
-                        onChange={(e) => setRagConfig({ ...ragConfig, rag_max_length: parseInt(e.target.value) })}
-                        className="w-full bg-white/5 border border-white/10 rounded-xl p-2 outline-none focus:border-blue-500"
+                        className="w-full bg-white/60 border border-gray-300 rounded-xl p-2 outline-none focus:border-blue-500"
                       />
                     </div>
                     <div className="flex justify-end pt-2">
                       <button
                         onClick={() => saveRagConfig(ragConfig)}
-                        className="px-6 py-2 rounded-xl bg-blue-600/20 hover:bg-blue-600/30 text-blue-400 border border-blue-500/30 font-bold transition-all flex items-center gap-2"
+                        className="px-6 py-2 rounded-xl bg-orange-600/20 hover:bg-orange-600/30 text-orange-400 border border-orange-500/30 font-bold transition-all flex items-center gap-2"
                       >
                         <Save size={18} /> Aplicar Parámetros
                       </button>
@@ -847,181 +973,140 @@ function App() {
                   </div>
                 </div>
 
-                {/* Parámetros de Voz (TTS) */}
+                {/* Optimización de Red / Monitoreo */}
                 <div className="glass-card">
                   <h3 className="text-xl font-semibold mb-6 flex items-center gap-2">
-                    <Volume2 size={20} className="text-emerald-400" /> Parámetros de Voz (TTS)
+                    <Activity size={20} className="text-blue-400" /> Monitoreo de Red
                   </h3>
                   <div className="space-y-4">
-                    <div className="grid grid-cols-1 gap-4">
-                      <div>
-                        <label className="block text-sm text-gray-400 mb-1">Voz Activa</label>
-                        <select
-                          value={ttsConfig.voice_sample}
-                          onChange={(e) => setTtsConfig({ ...ttsConfig, voice_sample: e.target.value })}
-                          className="w-full bg-white/5 border border-white/10 rounded-xl p-2 outline-none focus:border-emerald-500"
-                        >
-                          <option value="">Seleccionar voz...</option>
-                          {voices.map(v => (
-                            <option key={v.name} value={v.name}>{v.name}</option>
-                          ))}
-                        </select>
-                      </div>
-                      <div>
-                        <label className="block text-sm text-gray-400 mb-1">Idioma</label>
-                        <select
-                          value={ttsConfig.language}
-                          onChange={(e) => setTtsConfig({ ...ttsConfig, language: e.target.value })}
-                          className="w-full bg-white/5 border border-white/10 rounded-xl p-2 outline-none focus:border-emerald-500"
-                        >
-                          <option value="es">Español</option>
-                          <option value="en">English</option>
-                          <option value="fr">Français</option>
-                          <option value="de">Deutsch</option>
-                          <option value="it">Italiano</option>
-                          <option value="pt">Português</option>
-                        </select>
-                      </div>
+                    <div>
+                      <label className="block text-sm text-gray-600 mb-2">Frecuencia de salud (segundos)</label>
+                      <input
+                        type="number"
+                        min="5"
+                        max="600"
+                        value={healthInterval}
+                        onChange={(e) => setHealthInterval(parseInt(e.target.value))}
+                        className="w-full bg-white/60 border border-gray-300 rounded-xl p-3 outline-none focus:border-blue-500"
+                      />
                     </div>
-                    <div className="pt-4 flex justify-end">
+                    <div className="flex gap-2">
                       <button
-                        onClick={() => saveTtsConfig(ttsConfig)}
-                        className="px-6 py-2 rounded-xl bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-400 border border-emerald-500/30 font-bold transition-all flex items-center gap-2"
+                        onClick={() => updateConfig("HEALTH_CHECK_INTERVAL", healthInterval.toString())}
+                        className="flex-1 py-3 rounded-xl bg-blue-600 hover:bg-blue-500 text-white font-bold transition-all flex items-center justify-center gap-2"
                       >
-                        <Save size={18} /> Guardar Configuración de Voz
+                        <Save size={18} /> Aplicar
+                      </button>
+                      <button
+                        onClick={fetchHealth}
+                        className="px-4 py-3 rounded-xl bg-white/60 hover:bg-white/80 border border-gray-300 transition-all font-semibold flex items-center gap-2"
+                      >
+                        <RefreshCw size={18} /> Validar
                       </button>
                     </div>
                   </div>
                 </div>
 
-                {/* STT Configuration */}
+                {/* Inteligencia (LLM) */}
                 <div className="glass-card">
                   <h3 className="text-xl font-semibold mb-6 flex items-center gap-2">
-                    <Mic size={20} className="text-green-400" /> Configuración STT
-                  </h3>
-                  <div className="space-y-4">
-                    <div>
-                      <label className="block text-sm text-gray-400 mb-2">Idioma</label>
-                      <select value={sttConfig.language} onChange={(e) => setSttConfig({ ...sttConfig, language: e.target.value })} className="w-full bg-white/5 border border-white/10 rounded-xl p-3 outline-none focus:border-green-500">
-                        <option value="es">Español</option>
-                        <option value="en">English</option>
-                      </select>
-                    </div>
-                    <div>
-                      <label className="block text-sm text-gray-400 mb-2">Beam Size (1-10)</label>
-                      <input type="number" min="1" max="10" value={sttConfig.beam_size} onChange={(e) => setSttConfig({ ...sttConfig, beam_size: parseInt(e.target.value) })} className="w-full bg-white/5 border border-white/10 rounded-xl p-3 outline-none focus:border-green-500" />
-                    </div>
-                    <button onClick={() => saveSttConfig(sttConfig)} className="px-6 py-2 rounded-xl bg-green-600 hover:bg-green-500 text-white font-bold">Guardar STT</button>
-                  </div>
-                </div>
-
-                {/* LLM Provider */}
-                <div className="glass-card">
-                  <h3 className="text-xl font-semibold mb-6 flex items-center gap-2">
-                    <Cpu size={20} className="text-purple-400" /> Inteligencia (LLM)
+                    <Cpu size={20} className="text-violet-400" /> Inteligencia (LLM)
                   </h3>
                   <div className="space-y-6">
                     <div>
-                      <label className="block text-sm text-gray-400 mb-2">Proveedor</label>
+                      <label className="block text-sm text-gray-600 mb-2">Proveedor</label>
                       <select
                         value={config.LLM_PROVIDER}
                         onChange={(e) => updateConfig("LLM_PROVIDER", e.target.value)}
-                        className="w-full bg-white/5 border border-white/10 rounded-xl p-3 outline-none focus:border-purple-500"
+                        className="w-full bg-white/60 border border-gray-300 rounded-xl p-3 outline-none focus:border-purple-500"
                       >
-                        <option value="ollama">Ollama (Local - Gratis)</option>
-                        <option value="openai">OpenAI (Cloud - Pago)</option>
-                        <option value="gemini">Gemini (Cloud - Pago)</option>
+                        <option value="ollama">Ollama (Local)</option>
+                        <option value="openai">OpenAI (Cloud)</option>
+                        <option value="gemini">Gemini (Cloud)</option>
                       </select>
                     </div>
-
                     {config.LLM_PROVIDER === 'ollama' && (
-                      <div>
-                        <label className="block text-sm text-gray-400 mb-2">Modelo Local</label>
-                        <input
-                          type="text"
-                          value={config.OLLAMA_MODEL}
-                          onBlur={(e) => updateConfig("OLLAMA_MODEL", e.target.value)}
-                          className="w-full bg-white/5 border border-white/10 rounded-xl p-3 outline-none focus:border-purple-500"
-                          placeholder="ej. qwen2.5:1.5b"
-                        />
-                      </div>
-                    )}
-
-                    {(config.LLM_PROVIDER === 'openai' || config.LLM_PROVIDER === 'gemini') && (
-                      <div>
-                        <label className="block text-sm text-gray-400 mb-2">API Key</label>
-                        <input
-                          type="password"
-                          value={config.LLM_PROVIDER === 'openai' ? config.OPENAI_API_KEY : config.GEMINI_API_KEY}
-                          onBlur={(e) => updateConfig(config.LLM_PROVIDER === 'openai' ? "OPENAI_API_KEY" : "GEMINI_API_KEY", e.target.value)}
-                          className="w-full bg-white/5 border border-white/10 rounded-xl p-3 outline-none focus:border-purple-500"
-                          placeholder="sk-..."
-                        />
-                      </div>
+                      <input
+                        type="text"
+                        value={config.OLLAMA_MODEL}
+                        onBlur={(e) => updateConfig("OLLAMA_MODEL", e.target.value)}
+                        className="w-full bg-white/60 border border-gray-300 rounded-xl p-3 outline-none focus:border-purple-500"
+                        placeholder="ej. qwen2.5:1.5b"
+                      />
                     )}
                   </div>
                 </div>
-              </div>
 
-              {/* Voice & STT */}
-              <div className="glass-card">
-                <h3 className="text-xl font-semibold mb-6 flex items-center gap-2">
-                  <Mic size={20} className="text-green-400" /> Voz (STT/TTS)
-                </h3>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
-                  <div>
-                    <label className="block text-sm text-gray-400 mb-2">Idioma</label>
-                    <div className="flex gap-4">
-                      {['es', 'en'].map(lang => (
-                        <button
-                          key={lang}
-                          onClick={() => updateConfig("LANGUAGE", lang)}
-                          className={`flex-1 p-4 rounded-xl border transition-all uppercase font-bold ${config.STT_LANGUAGE === lang ? 'border-green-500 bg-green-500/10' : 'border-white/10 text-gray-500'}`}
+                {/* Voz & STT */}
+                <div className="glass-card">
+                  <h3 className="text-xl font-semibold mb-6 flex items-center gap-2">
+                    <Mic size={20} className="text-emerald-400" /> Voz y Transcripción
+                  </h3>
+                  <div className="space-y-6">
+                    <div className="grid grid-cols-2 gap-4">
+                      <div>
+                        <label className="block text-sm text-gray-600 mb-1">Idioma</label>
+                        <select
+                          value={ttsConfig.language}
+                          onChange={(e) => saveTtsConfig({ ...ttsConfig, language: e.target.value })}
+                          className="w-full bg-white/60 border border-gray-300 rounded-xl p-2 outline-none focus:border-pink-500"
                         >
-                          {lang === 'es' ? 'Español' : 'English'}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                  <div>
-                    <label className="block text-sm text-gray-400 mb-4">Clonación de Voz (.wav)</label>
-                    <div className="space-y-3 mb-6">
-                      {voices.length === 0 ? (
-                        <p className="text-xs text-gray-600 italic">No hay muestras de voz subidas.</p>
-                      ) : (
-                        voices.map(v => (
-                          <div key={v.name} className={`flex items-center justify-between p-3 rounded-xl border transition-all ${config.TTS_VOICE_FILE === v.name ? 'border-blue-500 bg-blue-500/5' : 'border-white/5 bg-white/2'}`}>
-                            <div className="flex items-center gap-3">
-                              <input
-                                type="radio"
-                                name="activeVoice"
-                                checked={config.TTS_VOICE_FILE === v.name}
-                                onChange={() => updateConfig("TTS_VOICE_FILE", v.name)}
-                                className="w-4 h-4 accent-blue-500"
-                              />
-                              <span className="text-sm font-medium truncate max-w-[150px]">{v.name}</span>
-                            </div>
-                            <button
-                              onClick={() => deleteVoice(v.name)}
-                              className="p-1.5 text-gray-500 hover:text-red-400 hover:bg-red-400/10 rounded-lg transition-all"
-                            >
-                              <Trash2 size={14} />
-                            </button>
-                          </div>
-                        ))
-                      )}
+                          <option value="es">Español</option>
+                          <option value="en">English</option>
+                        </select>
+                      </div>
+                      <div>
+                        <label className="block text-sm text-gray-600 mb-1">Beam Size (STT)</label>
+                        <input
+                          type="number"
+                          value={sttConfig.beam_size}
+                          onChange={(e) => saveSttConfig({ ...sttConfig, beam_size: parseInt(e.target.value) })}
+                          className="w-full bg-white/60 border border-gray-300 rounded-xl p-2 outline-none focus:border-orange-500"
+                        />
+                      </div>
                     </div>
 
-                    <label className="w-full flex items-center justify-center gap-2 py-3 rounded-xl border border-dashed border-white/20 hover:border-blue-500/50 hover:bg-blue-500/5 transition-all cursor-pointer text-sm text-gray-400 hover:text-blue-400">
-                      <Upload size={16} /> Subir Muestra .wav
-                      <input type="file" accept=".wav" className="hidden" onChange={handleVoiceUpload} />
-                    </label>
+                    <div className="space-y-4">
+                      <label className="block text-sm text-gray-600 font-bold">Muestras de Voz (.wav)</label>
+                      <div className="space-y-2 max-h-[200px] overflow-y-auto pr-2 custom-scrollbar">
+                        {voices.length === 0 ? (
+                          <p className="text-xs text-gray-500 italic pb-4">No hay muestras subidas.</p>
+                        ) : (
+                          voices.map(v => (
+                            <div key={v.name} className={`flex items-center justify-between p-3 rounded-xl border transition-all ${ttsConfig.voice_sample === v.name ? 'border-orange-500 bg-orange-500/5' : 'border-gray-200 bg-white/40'}`}>
+                              <div className="flex items-center gap-2">
+                                <input
+                                  type="radio"
+                                  checked={ttsConfig.voice_sample === v.name}
+                                  onChange={() => saveTtsConfig({ ...ttsConfig, voice_sample: v.name })}
+                                  className="w-4 h-4 accent-orange-500"
+                                />
+                                <span className="text-sm font-medium truncate max-w-[150px]">{v.name}</span>
+                              </div>
+                              <button
+                                onClick={() => deleteVoice(v.name)}
+                                className="p-1.5 text-gray-400 hover:text-red-500 hover:bg-red-500/10 rounded-lg transition-all"
+                                title="Eliminar voz"
+                              >
+                                <Trash2 size={14} />
+                              </button>
+                            </div>
+                          ))
+                        )}
+                      </div>
+
+                      <label className="w-full flex items-center justify-center gap-3 py-4 rounded-xl border-2 border-dashed border-gray-300 hover:border-orange-500/50 hover:bg-orange-500/5 transition-all cursor-pointer text-sm font-semibold text-gray-600">
+                        <Upload size={18} className="text-orange-500" />
+                        <span>Subir Fragmento .wav</span>
+                        <input type="file" accept=".wav" className="hidden" onChange={handleVoiceUpload} />
+                      </label>
+                      <p className="text-[10px] text-gray-400 text-center italic">Sube fragmentos de audio para clonar voces personalizadas.</p>
+                    </div>
                   </div>
                 </div>
               </div>
             </motion.div>
           )}
-
 
           {activeTab === 'debug' && (
             <motion.div
@@ -1031,93 +1116,83 @@ function App() {
               className="glass-card"
             >
               <h3 className="text-xl font-semibold mb-6 flex items-center gap-2">
-                <Terminal size={20} className="text-pink-400" /> Consola de Depuración Interactiva
+                <Terminal size={20} className="text-pink-400" /> Consola Interactiva
               </h3>
-
               <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
-                {/* Control Manual */}
                 <div className="space-y-6">
-                  <div className="p-4 bg-white/5 rounded-xl border border-white/10">
-                    <h4 className="font-bold text-gray-300 mb-2">Control de Voz</h4>
-                    <p className="text-xs text-gray-500 mb-4">Si el Wake Word falla, fuerza al sistema a escuchar.</p>
-                    <button
-                      onClick={() => handleDebugAction('listen')}
-                      className="w-full py-4 rounded-xl bg-red-500/20 text-red-400 border border-red-500/30 hover:bg-red-500/30 font-bold flex items-center justify-center gap-2 transition-all"
-                    >
-                      <Mic size={20} /> FORZAR ESCUCHA
-                    </button>
-                  </div>
-
-                  <div className="p-4 bg-white/5 rounded-xl border border-white/10">
-                    <h4 className="font-bold text-gray-300 mb-2">Entrada de Texto</h4>
-                    <p className="text-xs text-gray-500 mb-4">Escribe un comando o texto para probar los módulos.</p>
-                    <textarea
-                      value={debugText}
-                      onChange={(e) => setDebugText(e.target.value)}
-                      className="w-full bg-black/40 border border-white/10 rounded-xl p-3 text-white outline-none focus:border-pink-500 min-h-[100px]"
-                      placeholder="Escribe aquí (ej. 'Hola Jarvis' o un texto para TTS)..."
-                    />
-                  </div>
+                  <button onClick={() => handleDebugAction('listen')} className="w-full py-4 rounded-xl bg-red-500/20 text-red-400 border border-red-500/30 font-bold flex items-center justify-center gap-2 transition-all">
+                    <Mic size={20} /> FORZAR ESCUCHA
+                  </button>
+                  <textarea value={debugText} onChange={(e) => setDebugText(e.target.value)} className="w-full bg-black/40 border border-gray-300 rounded-xl p-3 text-white outline-none focus:border-pink-500 min-h-[100px]" placeholder="Texto de prueba..." />
                 </div>
-
-                {/* Acciones de Texto */}
                 <div className="space-y-4">
-                  <button
-                    onClick={() => handleDebugAction('chat')}
-                    className="w-full p-4 rounded-xl bg-blue-500/10 hover:bg-blue-500/20 border border-blue-500/30 flex items-center justify-between group transition-all"
-                  >
-                    <div className="text-left">
-                      <span className="block font-bold text-blue-400 group-hover:text-blue-300">Chat con Jarvis</span>
-                      <span className="text-xs text-gray-500">Simula que hablaste este texto (Flujo completo)</span>
-                    </div>
-                    <MessageSquare size={20} className="text-blue-500 opacity-50 group-hover:opacity-100" />
+                  <button onClick={() => handleDebugAction('chat')} className="w-full p-4 rounded-xl bg-blue-500/10 border border-blue-500/30 flex justify-between items-center group transition-all">
+                    <span className="font-bold text-blue-400">Chat con Samanta</span>
+                    <MessageSquare size={20} />
                   </button>
+                  <button onClick={() => handleDebugAction('tts')} className="w-full p-4 rounded-xl bg-purple-500/10 border border-purple-500/30 flex justify-between items-center group transition-all">
+                    <span className="font-bold text-purple-400">Prueba TTS</span>
+                    <Volume2 size={20} />
+                  </button>
+                  <button onClick={() => handleDebugAction('rag')} className="w-full p-4 rounded-xl bg-amber-500/10 border border-amber-500/30 flex justify-between items-center group transition-all">
+                    <span className="font-bold text-amber-400">Consulta RAG Directa</span>
+                    <Database size={20} />
+                  </button>
+                </div>
+              </div>
 
-                  <button
-                    onClick={() => handleDebugAction('tts')}
-                    className="w-full p-4 rounded-xl bg-purple-500/10 hover:bg-purple-500/20 border border-purple-500/30 flex items-center justify-between group transition-all"
-                  >
-                    <div className="text-left">
-                      <span className="block font-bold text-purple-400 group-hover:text-purple-300">Prueba TTS Directa</span>
-                      <span className="text-xs text-gray-500">Solo sintetiza y habla el texto (Sin RAG)</span>
-                    </div>
-                    <Volume2 size={20} className="text-purple-500 opacity-50 group-hover:opacity-100" />
-                  </button>
-
-                  <button
-                    onClick={() => handleDebugAction('rag')}
-                    className="w-full p-4 rounded-xl bg-yellow-500/10 hover:bg-yellow-500/20 border border-yellow-500/30 flex items-center justify-between group transition-all"
-                  >
-                    <div className="text-left">
-                      <span className="block font-bold text-yellow-400 group-hover:text-yellow-300">Consultar Cerebro (RAG)</span>
-                      <span className="text-xs text-gray-500">Consulta la base de datos vectorial y muestra respuesta</span>
-                    </div>
-                    <Database size={20} className="text-yellow-500 opacity-50 group-hover:opacity-100" />
-                  </button>
+              {/* Nueva sección de visualización de respuestas textuales en Debug */}
+              <div className="mt-8 pt-8 border-t border-gray-200">
+                <h4 className="text-sm font-bold text-gray-400 uppercase tracking-widest mb-4">Salida de Texto</h4>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div className="p-4 rounded-xl bg-black/5 border border-gray-200">
+                    <span className="text-[10px] text-blue-400 font-bold uppercase block mb-1">Entrada Detectada</span>
+                    <p className="text-sm text-gray-700 italic">{lastTranscript || "Sin transcripción reciente..."}</p>
+                  </div>
+                  <div className="p-4 rounded-xl bg-pink-500/5 border border-pink-500/10">
+                    <span className="text-[10px] text-pink-400 font-bold uppercase flex items-center gap-2 mb-1">
+                      Respuesta de Samanta
+                      {orchState === 'PROCESSING' && (
+                        <motion.div
+                          animate={{ opacity: [0.4, 1, 0.4] }}
+                          transition={{ duration: 1, repeat: Infinity }}
+                          className="w-2 h-2 rounded-full bg-green-500 shadow-[0_0_8px_#22c55e]"
+                        />
+                      )}
+                    </span>
+                    <p className="text-sm text-gray-800">{lastResponse || "Esperando respuesta..."}</p>
+                  </div>
                 </div>
               </div>
             </motion.div>
           )}
-        </AnimatePresence>
-      </main >
 
-      {/* Notifications */}
-      < div className="fixed bottom-8 right-8 space-y-2" >
+          {activeTab === 'ttstest' && (
+            <motion.div
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -10 }}
+            >
+              <TTSTest />
+            </motion.div>
+          )}
+        </AnimatePresence>
+      </main>
+
+      <div className="fixed bottom-8 right-8 space-y-2">
         {msg && (
           <motion.div
             initial={{ opacity: 0, x: 50 }}
             animate={{ opacity: 1, x: 0 }}
             exit={{ opacity: 0, x: 50 }}
-            className={`flex items-center gap-3 px-6 py-4 rounded-2xl shadow-xl glass border-white/10 ${msg.type === 'error' ? 'text-red-400' : 'text-green-400'
-              }`}
+            className={`flex items-center gap-3 px-6 py-4 rounded-2xl shadow-xl glass border-gray-300 ${msg.type === 'error' ? 'text-red-400' : 'text-green-400'}`}
           >
             {msg.type === 'error' ? <AlertCircle size={20} /> : <CheckCircle2 size={20} />}
             <span className="font-medium">{msg.text}</span>
           </motion.div>
-        )
-        }
-      </div >
-    </div >
+        )}
+      </div>
+    </div>
   );
 }
 

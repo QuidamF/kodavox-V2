@@ -118,6 +118,23 @@ services:
       - dashboard-api
     restart: unless-stopped
 
+  # Wake Word Service (OpenWakeWord)
+  wakeword-service:
+    build:
+      context: ./services/wakeword
+      dockerfile: Dockerfile
+    container_name: wakeword-service
+    ports:
+      - "8003:8003"
+    volumes:
+      - ./services/wakeword/app:/app/app
+    environment:
+      - WAKEWORD_MODEL=${WAKEWORD_MODEL:-hey_jarvis}
+      - WAKEWORD_THRESHOLD=${WAKEWORD_THRESHOLD:-0.5}
+    env_file:
+      - .env
+    restart: unless-stopped
+
 volumes:
   whisper_models:
   tts_models:
