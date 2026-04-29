@@ -65,6 +65,7 @@ function App() {
   const [lastTranscript, setLastTranscript] = useState("");
   const [lastResponse, setLastResponse] = useState("");
   const [audioEnergy, setAudioEnergy] = useState(0);
+  const [vadActive, setVadActive] = useState(false);
 
   // Debug State
   const [debugText, setDebugText] = useState("");
@@ -113,6 +114,16 @@ function App() {
       const answer = data.text || data.answer;
       setLastResponse(answer);
       addLog(`AI: ${answer}`);
+    });
+
+    socketRef.current.on('vad_speech_start', () => {
+      setVadActive(true);
+      addLog(`VAD: Inicio de voz detectado`);
+    });
+
+    socketRef.current.on('vad_speech_end', () => {
+      setVadActive(false);
+      addLog(`VAD: Fin de frase (silencio)`);
     });
 
     socketRef.current.on('audio_stop', (data) => {
@@ -462,6 +473,51 @@ function App() {
       return;
     }
 
+    if (module === 'vad') {
+      // Test de VAD
+      // Forzamos al orquestador a escuchar
+      if (socketRef.current) {
+          socketRef.current.emit('manual_listen', {});
+      }
+
+      let started = false;
+      let ended = false;
+      const onStart = () => { started = true; };
+      const onEnd = () => { ended = true; };
+      
+      socketRef.current.on('vad_speech_start', onStart);
+      socketRef.current.on('vad_speech_end', onEnd);
+      
+      showMsg("HABLE al micrófono ahora, luego haga SILENCIO...", "info");
+      
+      const checkVad = new Promise((resolve) => {
+        const start = Date.now();
+        const checker = setInterval(() => {
+          if (started && ended) {
+            clearInterval(checker);
+            resolve({ status: 'success', message: 'VAD detectó inicio y fin del habla correctamente.' });
+          }
+          // Timeout de 10 segundos
+          if (Date.now() - start > 10000) {
+            clearInterval(checker);
+            if (started && !ended) resolve({ status: 'error', message: 'VAD detectó inicio pero no fin (falta silencio).' });
+            else resolve({ status: 'error', message: 'No se detectó habla en absoluto.' });
+          }
+        }, 100);
+      });
+      
+      const res = await checkVad;
+      socketRef.current.off('vad_speech_start', onStart);
+      socketRef.current.off('vad_speech_end', onEnd);
+      
+      setTestResults(prev => ({ ...prev, [module]: res }));
+      if (res.status === 'success') showMsg("Prueba de VAD exitosa");
+      else showMsg("Fallo en prueba de VAD", "error");
+      
+      setTesting(null);
+      return;
+    }
+
     try {
       const res = await axios.get(`${API_BASE}/test/${module}`);
       setTestResults(prev => ({ ...prev, [module]: res.data }));
@@ -662,8 +718,10 @@ function App() {
                   {/* Visualizador de Micrófono */}
                   <div className="mt-6 w-full px-8 flex flex-col items-center">
                     <div className="flex items-center gap-2 mb-2">
-                      <Mic size={16} className={audioEnergy > 5 ? "text-green-400" : "text-gray-600"} />
-                      <span className="text-xs text-gray-500 uppercase font-bold">Nivel Micrófono</span>
+                      <Mic size={16} className={vadActive ? "text-red-500 animate-pulse" : (audioEnergy > 5 ? "text-green-400" : "text-gray-600")} />
+                      <span className="text-xs text-gray-500 uppercase font-bold">
+                        {vadActive ? "DETECTANDO VOZ (VAD)" : "Nivel Micrófono"}
+                      </span>
                     </div>
                     <div className="w-full h-2 bg-white/60 rounded-full overflow-hidden">
                       <motion.div
@@ -747,7 +805,8 @@ function App() {
                   { id: 'stt', label: 'Speech-to-Text', desc: 'Valida carga de modelos Whisper y latencia de red.', icon: Mic },
                   { id: 'tts', label: 'Text-to-Speech', desc: 'Verifica generación de audio y salud de XTTS.', icon: Volume2 },
                   { id: 'rag', label: 'RAG Engine', desc: 'Prueba la conexión Qdrant y lógica de recuperación.', icon: Database },
-                  { id: 'audio', label: 'Periféricos (Audio)', desc: 'Verifica si el sistema escucha tu micrófono.', icon: Mic }
+                  { id: 'audio', label: 'Periféricos (Audio)', desc: 'Verifica si el sistema escucha tu micrófono.', icon: Mic },
+                  { id: 'vad', label: 'Voice Activity (VAD)', desc: 'Prueba si detecta inicio y fin del habla.', icon: Activity }
                 ].map(mod => (
                   <div key={mod.id} className="glass-card flex flex-col justify-between">
                     <div>

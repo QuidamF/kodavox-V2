@@ -4,7 +4,7 @@ import asyncio
 
 class AppState(Enum):
     IDLE = auto()
-    LISTENING_WAKEWORD = auto()
+    WAITING_FOR_TRIGGER = auto()
     LISTENING_USER = auto()
     PROCESSING = auto()
     SPEAKING = auto()

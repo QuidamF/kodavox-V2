@@ -147,6 +147,18 @@ services:
       - .env
     restart: unless-stopped
 
+  # Voice Activity Detection (Silero VAD)
+  vad-service:
+    build:
+      context: ./services/vad
+      dockerfile: Dockerfile
+    container_name: vad-service
+    ports:
+      - "8004:8004"
+    volumes:
+      - ./services/vad/app:/app/app
+    restart: unless-stopped
+
 volumes:
   whisper_models:
   tts_models:

@@ -25,8 +25,8 @@ COPY requirements.txt .
 
 # Install Python dependencies
 # Using --no-cache-dir to reduce image size
-RUN pip install --no-cache-dir --upgrade pip
-RUN pip install --no-cache-dir -r requirements.txt
+RUN --mount=type=cache,target=/root/.cache/pip pip install --upgrade pip
+RUN --mount=type=cache,target=/root/.cache/pip pip install -r requirements.txt
 
 # Patch TTS/utils/io.py to include weights_only=False for torch.load
 # This resolves UnpicklingError with PyTorch 2.6+ when loading XTTSv2 models

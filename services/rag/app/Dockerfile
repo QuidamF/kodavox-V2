@@ -9,7 +9,7 @@ WORKDIR /app
 
 # Primero dependencias para cache eficiente
 COPY requirements.txt /app/requirements.txt
-RUN pip install --no-cache-dir -r /app/requirements.txt
+RUN --mount=type=cache,target=/root/.cache/pip pip install -r /app/requirements.txt
 
 # Copia el código
 COPY . /app

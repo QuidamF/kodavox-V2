@@ -9,6 +9,7 @@ from services.wake_word import WakeWordService
 from services.stt import STTServiceAdapter
 from services.rag import RAGServiceAdapter
 from services.tts import TTSServiceAdapter
+from services.vad import VADServiceAdapter
 
 class VoiceOrchestrator:
     def __init__(self, event_bus: EventBus, state_manager: StateManager):
@@ -23,10 +24,9 @@ class VoiceOrchestrator:
         self.stt_service = STTServiceAdapter(self.bus)
         self.rag_service = RAGServiceAdapter()
         self.tts_service = TTSServiceAdapter()
+        self.vad_service = VADServiceAdapter(self.bus, self.state_manager)
 
         self._loop = None
-        self._silence_counter = 0
-        self._max_silence_chunks = 15 # ~1.2 segundos de silencio para cortar
         
         # Task Management
         self.current_task = None
@@ -34,7 +34,9 @@ class VoiceOrchestrator:
         self.interruption_lock = asyncio.Lock()
 
         # Registrar eventos
-        self.bus.on("wakeword_detected", self.handle_wakeword)
+        self.bus.on("activation_trigger", self.handle_activation)
+        self.bus.on("vad_speech_start", self.handle_vad_speech_start)
+        self.bus.on("vad_speech_end", self.handle_vad_speech_end)
         self.bus.on("audio_chunk", self.handle_audio)
         
         # Eventos de Debug / Control Manual
@@ -51,9 +53,10 @@ class VoiceOrchestrator:
         # Iniciar captura y detección de wake word
         self.capturer.start(self._loop)
         self.ww_service.start()
+        self.vad_service.start()
         
         asyncio.run_coroutine_threadsafe(
-            self.state_manager.set_state(AppState.LISTENING_WAKEWORD), 
+            self.state_manager.set_state(AppState.WAITING_FOR_TRIGGER), 
             self._loop
         )
 
@@ -64,31 +67,17 @@ class VoiceOrchestrator:
         state = self.state_manager.get_state()
 
         # Enviar al buscador de palabra clave si está activo
-        if state in [AppState.IDLE, AppState.LISTENING_WAKEWORD]:
+        if state in [AppState.IDLE, AppState.WAITING_FOR_TRIGGER]:
             await self.ww_service.process_audio(chunk)
+
+        # Enviar al VAD para detectar silencios o barge-in
+        if state in [AppState.LISTENING_USER, AppState.SPEAKING, AppState.PROCESSING]:
+            await self.vad_service.process_audio(chunk)
 
         # Enviar al STT si estamos escuchando al usuario
         if state == AppState.LISTENING_USER:
             # print(".", end="", flush=True) # visual heartbeat
             await self.stt_service.send_audio(chunk)
-            
-            # Detección de silencio para terminar la frase
-            if energy < Config.MIC_ENERGY_THRESHOLD: # Threshold de silencio configurado
-                self._silence_counter += 1
-                if self._silence_counter % 5 == 0:
-                     print(f"[Orchestrator] Silence: {self._silence_counter}/{self._max_silence_chunks} (Energy: {energy:.1f})")
-            else:
-                if self._silence_counter > 0:
-                     print(f"[Orchestrator] Voice! Resetting silence. (Energy: {energy:.1f})")
-                self._silence_counter = 0
-            
-            if self._silence_counter > self._max_silence_chunks:
-                print(f"[Orchestrator] Max silence reached ({self._max_silence_chunks} chunks). unprocessed.")
-                print("[Orchestrator] Silence detected, finishing speech capture.")
-                self._silence_counter = 0
-                # Disparar el procesamiento en una tarea separada para no bloquear
-                # Disparar el procesamiento en una tarea separada para no bloquear
-                self.current_task = asyncio.create_task(self.process_interaction())
 
     async def cancel_current_interaction(self):
         """Cancela la interacción actual si existe y silencia el frontend."""
@@ -111,28 +100,43 @@ class VoiceOrchestrator:
         print("[Orchestrator] Sending audio_stop to frontend.")
         await self.bus.emit("audio_stop", {"stream_id": self.current_stream_id})
 
-    async def handle_wakeword(self, data):
-        """Manejador disparado cuando se detecta la palabra clave."""
-        print(f"[Orchestrator] handle_wakeword triggered. State: {self.state_manager.get_state()}")
+    async def handle_activation(self, data):
+        """Manejador disparado cuando ocurre un trigger de activación (ej. Wake Word, Cámara)."""
+        source = data.get("source", "unknown")
+        print(f"[Orchestrator] handle_activation triggered by {source}. State: {self.state_manager.get_state()}")
         try:
-            # Permitir interrupción en cualquier estado (Barge-in)
+            # Permitir interrupción en cualquier estado (Barge-in desde wake word)
             await self.cancel_current_interaction()
 
-            print("[Orchestrator] Wake word detected! Starting interaction.")
+            print("[Orchestrator] Activation Trigger detected! Starting interaction.")
             await self.state_manager.set_state(AppState.LISTENING_USER)
-            self._silence_counter = 0
             await self.stt_service.connect()
         except Exception as e:
-            print(f"[Orchestrator] CRITICAL ERROR in handle_wakeword: {e}")
+            print(f"[Orchestrator] CRITICAL ERROR in handle_activation: {e}")
             import traceback
             traceback.print_exc()
+
+    async def handle_vad_speech_start(self, data):
+        """Manejador disparado cuando el VAD detecta que el usuario empezó a hablar."""
+        state = self.state_manager.get_state()
+        if state in [AppState.SPEAKING, AppState.PROCESSING]:
+            print("[Orchestrator] VAD Barge-in triggered! User started speaking.")
+            await self.cancel_current_interaction()
+            await self.state_manager.set_state(AppState.LISTENING_USER)
+            await self.stt_service.connect()
+
+    async def handle_vad_speech_end(self, data):
+        """Manejador disparado cuando el VAD detecta fin de frase."""
+        state = self.state_manager.get_state()
+        if state == AppState.LISTENING_USER:
+            print("[Orchestrator] VAD Silence detected. Processing speech...")
+            self.current_task = asyncio.create_task(self.process_interaction())
 
     async def handle_manual_listen(self, data):
         """Fuerza al sistema al estado de escucha de usuario."""
         print("[Orchestrator] Manual listen triggered.")
         await self.cancel_current_interaction()
         await self.state_manager.set_state(AppState.LISTENING_USER)
-        self._silence_counter = 0
         await self.stt_service.connect()
 
     async def handle_process_text(self, data):
@@ -195,7 +199,7 @@ class VoiceOrchestrator:
             
             if not text or len(text.strip()) < 2:
                 print("[Orchestrator] No valid speech detected.")
-                await self.state_manager.set_state(AppState.LISTENING_WAKEWORD)
+                await self.state_manager.set_state(AppState.WAITING_FOR_TRIGGER)
                 return
 
             print(f"[Orchestrator] User said: {text}")
@@ -221,6 +225,15 @@ class VoiceOrchestrator:
                      
                 full_response += token
                 sentence_buffer += token
+                
+                # Filtrar bloques de razonamiento (como en modelos deepseek o qwen3.5)
+                if "<think>" in sentence_buffer:
+                    if "</think>" in sentence_buffer:
+                        # Se cerró el bloque, eliminarlo del buffer
+                        sentence_buffer = re.sub(r'<think>.*?</think>\s*', '', sentence_buffer, flags=re.DOTALL)
+                    else:
+                        # Sigue pensando, no procesar oraciones aún
+                        continue
                 
                 # Check for end of sentence
                 match = sentence_end_pattern.search(sentence_buffer)
@@ -249,7 +262,8 @@ class VoiceOrchestrator:
                     await self.bus.emit("audio_playback_chunk", {"data": b64_chunk, "stream_id": stream_id})
 
             # Emit final rag_response purely for the UI dashboard
-            await self.bus.emit("rag_response", {"text": full_response})
+            clean_response = re.sub(r'<think>.*?</think>\s*', '', full_response, flags=re.DOTALL)
+            await self.bus.emit("rag_response", {"text": clean_response})
             
             # Para restaurar playback local Y remoto simultáneo sin re-escribir todo el audio framework:
             # Simplemente llamamos a speak() normal en un thread (que hace playback local)
@@ -261,11 +275,11 @@ class VoiceOrchestrator:
 
 
             # 4. Volver a esperar
-            print("[Orchestrator] Resuming wake word detection.")
-            await self.state_manager.set_state(AppState.LISTENING_WAKEWORD)
+            print("[Orchestrator] Resuming trigger monitoring.")
+            await self.state_manager.set_state(AppState.WAITING_FOR_TRIGGER)
 
         except Exception as e:
             print(f"[Orchestrator] Error during interaction: {e}")
             await self.state_manager.set_state(AppState.ERROR)
             await asyncio.sleep(2)
-            await self.state_manager.set_state(AppState.LISTENING_WAKEWORD)
+            await self.state_manager.set_state(AppState.WAITING_FOR_TRIGGER)

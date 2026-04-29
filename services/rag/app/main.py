@@ -29,8 +29,10 @@ MAX_CONCURRENCY = int(os.getenv("MAX_CONCURRENCY", "4"))
 RAG_CONFIG = {}
 
 def refresh_rag_config():
-    global RAG_CONFIG
+    global RAG_CONFIG, OLLAMA_TIMEOUT
     RAG_CONFIG = get_config()
+    if RAG_CONFIG and 'ollama_timeout' in RAG_CONFIG:
+        OLLAMA_TIMEOUT = float(RAG_CONFIG['ollama_timeout'])
 
 refresh_rag_config() # Initial load
 
@@ -46,70 +48,77 @@ embed_model = SentenceTransformer("BAAI/bge-m3")
 app = FastAPI(title="Multi-LLM RAG API")
 semaphore = asyncio.Semaphore(MAX_CONCURRENCY)
 
-# Redis client
-REDIS_HOST = os.getenv("REDIS_HOST", "redis-cache")
-REDIS_PORT = int(os.getenv("REDIS_PORT", "6379"))
-try:
-    redis_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=0, decode_responses=True)
-    redis_client.ping()
-    print("--- Connected to Redis Cache ---")
-except Exception as e:
-    print(f"--- Warning: Could not connect to Redis: {e} ---")
-    redis_client = None
+# Redis client cache - DESHABILITADO para conversaciones dinámicas
+# (Evita que KodaVox repita la misma respuesta a preguntas similares y permite 
+# respuestas frescas si la base de conocimientos se actualiza).
+redis_client = None
 
 # --- Abstracción de Proveedores ---
 
 class LLMProvider(Protocol):
-    async def generate(self, prompt: str, temperature: float, max_length: int) -> str:
+    async def generate(self, system_prompt: str, user_prompt: str, temperature: float, max_length: int) -> str:
         ...
-    async def generate_stream(self, prompt: str, temperature: float, max_length: int):
+    async def generate_stream(self, system_prompt: str, user_prompt: str, temperature: float, max_length: int):
         ...
 
 class OllamaProvider:
-    async def generate(self, prompt: str, temperature: float, max_length: int) -> str:
+    async def generate(self, system_prompt: str, user_prompt: str, temperature: float, max_length: int) -> str:
         payload = {
             "model": OLLAMA_MODEL,
-            "prompt": prompt,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ],
             "stream": False,
-            "temperature": temperature,
-            "max_length": max_length
+            "options": {
+                "temperature": temperature,
+                "num_predict": max_length
+            }
         }
         async with semaphore:
             async with httpx.AsyncClient(timeout=OLLAMA_TIMEOUT) as client:
-                r = await client.post(f"{OLLAMA_HOST}/api/generate", json=payload)
+                r = await client.post(f"{OLLAMA_HOST}/api/chat", json=payload)
                 if r.status_code != 200:
                     raise HTTPException(status_code=500, detail=f"Ollama error: {r.text}")
-                return r.json().get("response", "")
+                return r.json().get("message", {}).get("content", "")
 
-    async def generate_stream(self, prompt: str, temperature: float, max_length: int):
+    async def generate_stream(self, system_prompt: str, user_prompt: str, temperature: float, max_length: int):
         payload = {
             "model": OLLAMA_MODEL,
-            "prompt": prompt,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ],
             "stream": True,
-            "temperature": temperature,
-            "max_length": max_length
+            "options": {
+                "temperature": temperature,
+                "num_predict": max_length
+            }
         }
         async with semaphore:
             async with httpx.AsyncClient(timeout=OLLAMA_TIMEOUT) as client:
-                async with client.stream("POST", f"{OLLAMA_HOST}/api/generate", json=payload) as response:
+                async with client.stream("POST", f"{OLLAMA_HOST}/api/chat", json=payload) as response:
                     response.raise_for_status()
                     async for chunk in response.aiter_lines():
                         if chunk:
                             try:
                                 data = json.loads(chunk)
-                                if "response" in data:
-                                    yield data["response"]
+                                if "message" in data and "content" in data["message"]:
+                                    yield data["message"]["content"]
                             except:
                                 pass
 
 class OpenAIProvider:
-    async def generate(self, prompt: str, temperature: float, max_length: int) -> str:
+    async def generate(self, system_prompt: str, user_prompt: str, temperature: float, max_length: int) -> str:
         if not OPENAI_API_KEY:
             raise HTTPException(status_code=500, detail="OpenAI API Key not configured")
         
         payload = {
             "model": "gpt-4o-mini", # O el configurado
-            "messages": [{"role": "user", "content": prompt}],
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ],
             "temperature": temperature,
             "max_tokens": max_length
         }
@@ -124,19 +133,20 @@ class OpenAIProvider:
                     raise HTTPException(status_code=500, detail=f"OpenAI error: {r.text}")
                 return r.json()["choices"][0]["message"]["content"]
                 
-    async def generate_stream(self, prompt: str, temperature: float, max_length: int):
+    async def generate_stream(self, system_prompt: str, user_prompt: str, temperature: float, max_length: int):
         # Fallback to sync for now for other providers to avoid complexity
-        res = await self.generate(prompt, temperature, max_length)
+        res = await self.generate(system_prompt, user_prompt, temperature, max_length)
         yield res
 
 class GeminiProvider:
-    async def generate(self, prompt: str, temperature: float, max_length: int) -> str:
+    async def generate(self, system_prompt: str, user_prompt: str, temperature: float, max_length: int) -> str:
         if not GEMINI_API_KEY:
             raise HTTPException(status_code=500, detail="Gemini API Key not configured")
         
         url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
         payload = {
-            "contents": [{"parts": [{"text": prompt}]}],
+            "systemInstruction": {"parts": [{"text": system_prompt}]},
+            "contents": [{"parts": [{"text": user_prompt}]}],
             "generationConfig": {
                 "temperature": temperature,
                 "maxOutputTokens": max_length
@@ -149,9 +159,9 @@ class GeminiProvider:
                     raise HTTPException(status_code=500, detail=f"Gemini error: {r.text}")
                 return r.json()["candidates"][0]["content"]["parts"][0]["text"]
 
-    async def generate_stream(self, prompt: str, temperature: float, max_length: int):
+    async def generate_stream(self, system_prompt: str, user_prompt: str, temperature: float, max_length: int):
         # Fallback to sync for now for other providers to avoid complexity
-        res = await self.generate(prompt, temperature, max_length)
+        res = await self.generate(system_prompt, user_prompt, temperature, max_length)
         yield res
 
 from fastapi.responses import StreamingResponse
@@ -294,25 +304,17 @@ async def ask(
         
         # Usar instrucciones del sistema desde la configuración
         system_instructions = RAG_CONFIG.get('system_instructions', '')
-        prompt = (
-            f"{persona}\n\n"
-            f"{system_instructions}\n\n"
-            f"CONTEXTO:\n{combined}\n\n"
-            f"PREGUNTA: {query}\n"
-            f"RESPUESTA:"
-        )
+        system_prompt = f"{persona}\n\n{system_instructions}"
+        user_prompt = f"CONTEXTO:\n{combined}\n\nPREGUNTA: {query}\nRESPUESTA:"
     else:
         # Sin contexto, rechazar la pregunta directamente
-        prompt = (
-            f"{persona}\n\n"
-            f"No se encontró información relevante en la base de conocimientos para responder a: '{query}'.\n"
-            f"Responde de forma educada indicando que no tienes esa información."
-        )
+        system_prompt = f"{persona}\n\nEstás actuando como asistente pero debes responder honestamente."
+        user_prompt = f"No se encontró información relevante en la base de conocimientos para responder a: '{query}'.\nResponde de forma educada indicando que no tienes esa información."
 
-    print("\n--- FINAL PROMPT ---\n", prompt, "\n---------------------")
+    print("\n--- FINAL PROMPT ---\nSYS:", system_prompt, "\nUSER:", user_prompt, "\n---------------------")
 
     # 4) Generar Respuesta con el proveedor seleccionado
-    answer = await llm.generate(prompt, temperature=temperature, max_length=max_length)
+    answer = await llm.generate(system_prompt, user_prompt, temperature=temperature, max_length=max_length)
 
     # 5) Guardar en Caché
     if redis_client and answer:
@@ -375,15 +377,17 @@ async def ask_stream(query: str = Query(...)):
         if len(combined) > max_context_chars:
             combined = _truncate(combined, max_context_chars)
         system_instructions = RAG_CONFIG.get('system_instructions', '')
-        prompt = f"{persona}\n\n{system_instructions}\n\nCONTEXTO:\n{combined}\n\nPREGUNTA: {query}\nRESPUESTA:"
+        system_prompt = f"{persona}\n\n{system_instructions}"
+        user_prompt = f"CONTEXTO:\n{combined}\n\nPREGUNTA: {query}\nRESPUESTA:"
     else:
-        prompt = f"{persona}\n\nNo se encontró información relevante en la base de conocimientos para responder a: '{query}'.\nResponde de forma educada indicando que no tienes esa información."
+        system_prompt = f"{persona}\n\nEstás actuando como asistente."
+        user_prompt = f"No se encontró información relevante en la base de conocimientos para responder a: '{query}'.\nResponde de forma educada indicando que no tienes esa información."
 
-    print("\n--- FINAL PROMPT (STREAM) ---\n", prompt, "\n---------------------")
+    print("\n--- FINAL PROMPT (STREAM) ---\nSYS:", system_prompt, "\nUSER:", user_prompt, "\n---------------------")
 
     async def stream_generator():
         full_answer = ""
-        async for token in llm.generate_stream(prompt, temperature=temperature, max_length=max_length):
+        async for token in llm.generate_stream(system_prompt, user_prompt, temperature=temperature, max_length=max_length):
             full_answer += token
             yield token
             

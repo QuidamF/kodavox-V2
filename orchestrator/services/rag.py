@@ -47,7 +47,7 @@ class RAGServiceAdapter:
         try:
             params = {"query": text} 
             async with httpx.AsyncClient() as client:
-                async with client.stream("GET", stream_uri, params=params, timeout=60.0) as response:
+                async with client.stream("GET", stream_uri, params=params, timeout=300.0) as response:
                     response.raise_for_status()
                     async for chunk in response.aiter_text():
                         if chunk:
