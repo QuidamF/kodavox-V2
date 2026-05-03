@@ -1,28 +1,5 @@
 services:
-  # STT Service (Whisper)
-  stt-service:
-    build:
-      context: ./services/stt
-      dockerfile: Dockerfile
-    container_name: stt-service
-    ports:
-      - "8000:8000"
-    volumes:
-      - ./services/stt/app:/app/app
-      - ./services/stt/db:/app/db
-      - whisper_models:/app/models
-    env_file:
-      - .env
-    restart: unless-stopped
-    # deploy: # Descomentar para usar GPU
-    #   resources:
-    #     reservations:
-    #       devices:
-    #         - driver: nvidia
-    #           count: 1
-    #           capabilities: [gpu]
-
-    # TTS Service (XTTS-v2)
+  # TTS Service (XTTS-v2) - Mantenido como microservicio de streaming
   tts-service:
     build: ./services/tts
     container_name: tts-service
@@ -45,122 +22,34 @@ services:
         reservations:
           devices:
             - driver: nvidia
-              # count: all
               capabilities: [ gpu ]
 
-  # RAG Stack
-  ollama:
-    image: ollama/ollama:latest
-    container_name: ollama
-    ports:
-      - "11434:11434"
+  # KodaVox V2 Monolithic Engine (VAD + STT + Orchestrator)
+  kodavox-engine:
+    build: 
+      context: ./orchestrator
+      dockerfile: Dockerfile
+    container_name: kodavox-engine
+    # Utilizamos network_mode: host para facilitar el acceso a PyAudio/ALSA a la red local y al micrófono
+    network_mode: "host"
     environment:
-      - OLLAMA_KEEP_ALIVE=-1
+      - OLLAMA_HOST=http://127.0.0.1:11434
+    env_file:
+      - .env
     volumes:
-      - ./services/rag/ollama:/root/.ollama
+      - ./orchestrator:/app
+    # Privilegiado y mapeo de dispositivos de audio (Linux/Ubuntu)
+    privileged: true
+    devices:
+      - "/dev/snd:/dev/snd"
     restart: unless-stopped
     deploy:
       resources:
         reservations:
           devices:
             - driver: nvidia
-              # count: all
               capabilities: [ gpu ]
 
-  qdrant:
-    image: qdrant/qdrant:latest
-    container_name: qdrant
-    ports:
-      - "6333:6333"
-    volumes:
-      - ./services/rag/qdrant_storage:/qdrant/storage
-    restart: unless-stopped
-
-  redis-cache:
-    image: redis:alpine
-    container_name: redis-cache
-    ports:
-      - "6379:6379"
-    restart: unless-stopped
-    volumes:
-      - redis_data:/data
-    command: redis-server --save 60 1 --loglevel warning
-
-  rag-api:
-    build: ./services/rag/app
-    container_name: rag-api
-    ports:
-      - "8002:8000"
-    environment:
-      - OLLAMA_HOST=http://ollama:11434
-      - QDRANT_HOST=http://qdrant:6333
-      - LLM_PROVIDER=${LLM_PROVIDER}
-      - OLLAMA_MODEL=${OLLAMA_MODEL}
-      - OPENAI_API_KEY=${OPENAI_API_KEY}
-      - GEMINI_API_KEY=${GEMINI_API_KEY}
-    env_file:
-      - .env
-    depends_on:
-      - ollama
-      - qdrant
-    restart: unless-stopped
-    volumes:
-      - ./services/rag/data:/data
-      - ./services/rag/db:/app/db
-
-  # Dashboard Backend
-  dashboard-api:
-    build: ./dashboard/backend
-    container_name: dashboard-api
-    ports:
-      - "8080:8080"
-    volumes:
-      - ./.env:/app/.env
-      - ./services/rag/data:/services/rag/data
-      - ./services/tts/voices:/services/tts/voices
-    restart: unless-stopped
-
-  # Dashboard UI
-  dashboard-ui:
-    build: ./dashboard/frontend
-    container_name: dashboard-ui
-    ports:
-      - "80:80"
-    depends_on:
-      - dashboard-api
-    restart: unless-stopped
-
-  # Wake Word Service (OpenWakeWord)
-  wakeword-service:
-    build:
-      context: ./services/wakeword
-      dockerfile: Dockerfile
-    container_name: wakeword-service
-    ports:
-      - "8003:8003"
-    volumes:
-      - ./services/wakeword/app:/app/app
-    environment:
-      - WAKEWORD_MODEL=${WAKEWORD_MODEL:-hey_jarvis}
-      - WAKEWORD_THRESHOLD=${WAKEWORD_THRESHOLD:-0.5}
-    env_file:
-      - .env
-    restart: unless-stopped
-
-  # Voice Activity Detection (Silero VAD)
-  vad-service:
-    build:
-      context: ./services/vad
-      dockerfile: Dockerfile
-    container_name: vad-service
-    ports:
-      - "8004:8004"
-    volumes:
-      - ./services/vad/app:/app/app
-    restart: unless-stopped
-
 volumes:
-  whisper_models:
   tts_models:
   huggingface_cache:
-  redis_data:
