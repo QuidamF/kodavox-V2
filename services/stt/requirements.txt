@@ -1,9 +1,0 @@
-fastapi
-uvicorn[standard]
-python-dotenv
-faster-whisper
-websockets
-pydub
-ffmpeg-python
-python-multipart
-pydantic-settings
