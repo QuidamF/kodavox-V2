@@ -1,44 +1,58 @@
-# 🎙️ KodaVox Ecosystem
+# 🎙️ KodaVox V2: Active Speech Engine
 
-Bienvenido al ecosistema **KodaVox**. Este proyecto es una solución integral para crear asistentes de voz inteligentes, modulares y 100% locales (con opción a nube).
+Bienvenido a **KodaVox V2**. Esta versión ha sido rediseñada desde cero para priorizar la **latencia mínima absoluta**, pasando de una arquitectura de microservicios distribuida a un **Motor Monolítico en Memoria** enfocado en una experiencia de "Habla Activa" (Active Speech) fluida.
 
-## ⚡ Inicio Automático (Windows)
-
-He creado un script para que no tengas que levantar cada parte por separado:
-1. Haz clic derecho sobre **`Start-System.ps1`** en la raíz.
-2. Selecciona **"Ejecutar con PowerShell"**.
-
-Este script levantará automáticamente Docker, verificará tus dependencias de Python e iniciará el orquestador en una nueva ventana.
+## 🚀 Cambios Principales (V2)
+- **Latencia Zero-Internal**: VAD y STT ahora corren en el mismo proceso de Python, eliminando saltos de red.
+- **Barge-in Nativo**: El sistema detecta interrupciones de forma instantánea mediante Silero VAD local.
+- **Desacoplamiento**: Se eliminaron dependencias de WakeWord y RAG para maximizar la velocidad de respuesta.
+- **Dashboard de Diagnóstico**: Nueva interfaz en React/Vite para monitorear telemetría en tiempo real.
 
 ---
 
-## 🚀 Inicio Manual (Paso a Paso)
+## 🛠️ Requisitos de Instalación (Ubuntu 22.04)
+
+Para que el motor pueda compilar las librerías de audio nativas en Linux, debes instalar las dependencias de desarrollo de PortAudio:
+
+```bash
+# 1. Instalar dependencias del sistema (CRUCIAL)
+sudo apt-get update && sudo apt-get install -y portaudio19-dev python3-dev build-essential
+
+# 2. Asegúrate de tener Docker y NVIDIA Container Toolkit instalados para el TTS
+```
 
 ---
 
-## 🏗️ Documentación Técnica
+## ⚡ Inicio Rápido
 
-Para una comprensión profunda del sistema, revisa los siguientes documentos:
+He creado un script de automatización que levanta todo el entorno (Docker, Venv, Motor y Dashboard) con un solo comando:
 
-- **[🗺️ Arquitectura del Sistema](file:///c:/Users/JPM-PROGRAMACION/Documents/Proyectos/orquestador de voz/ARCHITECTURE.md)**: Diagramas Mermaid, patrones de diseño y especificaciones de hardware.
-- **[🛠️ Guía de Instalación Detallada](file:///c:/Users/JPM-PROGRAMACION/Documents/Proyectos/orquestador de voz/README.md)**: Pasos detallados para configurar el entorno desde cero.
+```bash
+./start_v2.sh
+```
 
-### 📦 Módulos Individuales
-Cada componente tiene su propia documentación técnica:
-- [🔹 Speech-to-Text (Whisper)](file:///c:/Users/JPM-PROGRAMACION/Documents/Proyectos/orquestador de voz/services/stt/README.md)
-- [🔹 Text-to-Speech (XTTS)](file:///c:/Users/JPM-PROGRAMACION/Documents/Proyectos/orquestador de voz/services/tts/README.md)
-- [🔹 RAG Engine (Conocimiento)](file:///c:/Users/JPM-PROGRAMACION/Documents/Proyectos/orquestador de voz/services/rag/README.md)
-- [🔹 Dashboard de Gestión](file:///c:/Users/JPM-PROGRAMACION/Documents/Proyectos/orquestador de voz/dashboard/README.md)
-
----
-
-## 💻 Requisitos de Sistema
-
-- **Mínimo**: 16GB RAM | CPU 4 Cores.
-- **Recomendado**: 32GB RAM | NVIDIA GPU con 8GB+ VRAM (RTX 3060+).
-- **S.O.**: Windows 10/11 con Docker Desktop.
+### ¿Qué hace este script?
+1. Levanta el contenedor de **XTTS (TTS)** en Docker.
+2. Crea y configura un entorno virtual de Python (`venv`) en la carpeta `orchestrator/`.
+3. Instala los requerimientos (`pyaudio`, `faster-whisper`, `torch`, etc.).
+4. Inicia el **Motor Monolítico** (`core_engine.py`) en el puerto 5000.
+5. Inicia el **Dashboard V2** en el puerto 5173.
 
 ---
 
-## 👥 Perfil Sugerido
-Ideal para desarrolladores con experiencia en **Python (FastAPI)**, **Docker**, **IA (RAG/NLP)** y **React**.
+## 📊 Dashboard de Diagnóstico
+Una vez iniciado, abre tu navegador en:
+👉 **http://localhost:5173**
+
+Desde aquí podrás validar módulo por módulo:
+- **Mic Level**: Nivel de entrada de audio.
+- **VAD Status**: Detección de voz en tiempo real.
+- **STT**: Transcripción inmediata de Whisper.
+- **LLM**: Flujo de tokens de Ollama.
+- **TTS**: Estado de la síntesis de voz.
+
+---
+
+## 👥 Notas de Desarrollo
+- El motor se comunica con **Ollama** en `http://127.0.0.1:11434`. Asegúrate de tener Ollama corriendo localmente con el modelo configurado (por defecto `qwen2.5:3b`).
+- La configuración principal reside en el archivo `.env` en la raíz.
