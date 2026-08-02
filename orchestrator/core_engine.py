@@ -19,7 +19,11 @@ OLLAMA_URL = os.getenv("OLLAMA_HOST", "http://127.0.0.1:11434") + "/api/generate
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen2.5:3b")
 TTS_URL = os.getenv("TTS_URI", "http://127.0.0.1:8001/api/tts/stream")
 TTS_CONFIG_URL = os.getenv("TTS_CONFIG_URI", "http://127.0.0.1:8001/api/config")
-VOICE_SAMPLE = os.getenv("VOICE_SAMPLE", "sample.wav")
+TTS_HEALTH_URL = os.getenv("TTS_HEALTH_URL", "http://127.0.0.1:8001/")
+# La voz se gestiona y persiste en el servicio TTS. Solo se reemplaza al
+# habilitar explícitamente esta opción para evitar recalcular latentes al inicio.
+CONFIGURE_TTS_VOICE_ON_START = os.getenv("TTS_CONFIGURE_VOICE_ON_START", "false").lower() == "true"
+VOICE_SAMPLE = os.getenv("VOICE_SAMPLE")
 
 # --- Servidor de Telemetría (Socket.IO) ---
 sio = socketio.AsyncServer(async_mode='asgi', cors_allowed_origins='*')
@@ -63,11 +67,24 @@ class MonolithicEngine:
     async def setup_tts(self):
         try:
             async with httpx.AsyncClient() as client:
+                response = await client.get(TTS_HEALTH_URL, timeout=15.0)
+                response.raise_for_status()
+                active_voice = response.json().get("config", {}).get("voice_sample", "sin configurar")
+
+                if not CONFIGURE_TTS_VOICE_ON_START:
+                    print(f"[Engine] TTS listo; conservando voz persistida: {active_voice}.")
+                    return
+
+                if not VOICE_SAMPLE:
+                    print("[Engine] TTS listo; no se cambió la voz porque VOICE_SAMPLE no está definido.")
+                    return
+
                 payload = {"voice_sample": VOICE_SAMPLE, "language": "es"}
-                await client.post(TTS_CONFIG_URL, json=payload, timeout=15.0)
-                print("[Engine] TTS configurado correctamente.")
-        except Exception:
-            print("[Engine] No se pudo configurar el servicio TTS.")
+                response = await client.post(TTS_CONFIG_URL, json=payload, timeout=15.0)
+                response.raise_for_status()
+                print(f"[Engine] TTS configurado explícitamente con la voz: {VOICE_SAMPLE}.")
+        except httpx.HTTPError as error:
+            print(f"[Engine] No se pudo configurar el servicio TTS: {error}")
 
     async def emit_telemetry(self, event: str, data: dict):
         await sio.emit(event, data)
@@ -102,7 +119,7 @@ class MonolithicEngine:
                     self.loop.call_soon_threadsafe(
                         lambda: asyncio.create_task(self.emit_telemetry('telemetry_vad', {"is_speaking": False}))
                     )
-                    
+
                     if len(self.audio_buffer) > SAMPLE_RATE * 0.2:
                         audio_to_process = np.array(self.audio_buffer, dtype=np.float32)
                         self.audio_buffer = []
@@ -182,31 +199,31 @@ class MonolithicEngine:
             async with httpx.AsyncClient() as client:
                 payload = {"text": text}
                 async with client.stream("POST", TTS_URL, json=payload, timeout=30.0) as response:
-                    if response.status_code == 200:
-                        stream = self.pa.open(
-                            format=pyaudio.paInt16,
-                            channels=1,
-                            rate=24000,
-                            output=True,
-                            frames_per_buffer=1024
-                        )
-                        # Acumular bytes para evitar microcortes y subdesbordamiento de buffer (underflow)
-                        audio_buffer = b""
-                        min_chunk_size = 4096  # ~85ms de audio a 24kHz 16-bit mono
-                        
-                        async for chunk in response.aiter_bytes():
-                            audio_buffer += chunk
-                            while len(audio_buffer) >= min_chunk_size:
-                                to_write = audio_buffer[:min_chunk_size]
-                                audio_buffer = audio_buffer[min_chunk_size:]
-                                await asyncio.to_thread(stream.write, to_write)
-                                
-                        # Escribir el remanente en el buffer
-                        if audio_buffer:
-                            await asyncio.to_thread(stream.write, audio_buffer)
+                    response.raise_for_status()
+                    stream = self.pa.open(
+                        format=pyaudio.paInt16,
+                        channels=1,
+                        rate=24000,
+                        output=True,
+                        frames_per_buffer=1024
+                    )
+                    # Acumular bytes para evitar microcortes y subdesbordamiento de buffer (underflow)
+                    audio_buffer = b""
+                    min_chunk_size = 4096  # ~85ms de audio a 24kHz 16-bit mono
+
+                    async for chunk in response.aiter_bytes():
+                        audio_buffer += chunk
+                        while len(audio_buffer) >= min_chunk_size:
+                            to_write = audio_buffer[:min_chunk_size]
+                            audio_buffer = audio_buffer[min_chunk_size:]
+                            await asyncio.to_thread(stream.write, to_write)
                             
-                        stream.stop_stream()
-                        stream.close()
+                    # Escribir el remanente en el buffer
+                    if audio_buffer:
+                        await asyncio.to_thread(stream.write, audio_buffer)
+
+                    stream.stop_stream()
+                    stream.close()
         except Exception as e:
             print(f"[TTS Error] {e}")
             

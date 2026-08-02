@@ -8,6 +8,26 @@ echo "=================================================="
 echo "[1/4] Iniciando servicio TTS (XTTS-v2) en Docker..."
 docker compose up -d tts-service
 
+# XTTS puede tardar varios minutos en descargar/cargar el modelo. No iniciamos
+# el motor hasta que su endpoint de salud pueda aceptar conexiones.
+TTS_HEALTH_URL="${TTS_HEALTH_URL:-http://127.0.0.1:8001/}"
+TTS_WAIT_SECONDS="${TTS_WAIT_SECONDS:-300}"
+echo "   -> Esperando a que TTS esté disponible (máximo ${TTS_WAIT_SECONDS}s)..."
+for ((elapsed = 0; elapsed < TTS_WAIT_SECONDS; elapsed += 2)); do
+    if curl --fail --silent --output /dev/null --max-time 2 "$TTS_HEALTH_URL"; then
+        echo "   -> TTS listo."
+        break
+    fi
+    sleep 2
+done
+
+if ! curl --fail --silent --output /dev/null --max-time 2 "$TTS_HEALTH_URL"; then
+    echo "ERROR: TTS no respondió en ${TTS_WAIT_SECONDS}s; el motor no se iniciará."
+    echo "Últimos registros de tts-service:"
+    docker compose logs --tail=50 tts-service
+    exit 1
+fi
+
 # 2. Configurar Entorno Python e Iniciar Motor Monolítico
 echo "[2/4] Configurando Motor Monolítico..."
 cd orchestrator

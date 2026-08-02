@@ -56,3 +56,4 @@ Desde aquí podrás validar módulo por módulo:
 ## 👥 Notas de Desarrollo
 - El motor se comunica con **Ollama** en `http://127.0.0.1:11434`. Asegúrate de tener Ollama corriendo localmente con el modelo configurado (por defecto `qwen2.5:3b`).
 - La configuración principal reside en el archivo `.env` en la raíz.
+- La voz de XTTS se conserva en la configuración persistente del servicio, para reutilizar sus latentes. Para forzar otra voz al iniciar, define `TTS_CONFIGURE_VOICE_ON_START=true` y `VOICE_SAMPLE=<archivo.wav>` en `.env`.
