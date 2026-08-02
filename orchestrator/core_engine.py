@@ -8,18 +8,38 @@ import socketio
 import uvicorn
 import json
 import sys
+import re
+import unicodedata
 from fastapi import FastAPI
 from faster_whisper import WhisperModel
 from contextlib import asynccontextmanager
+from services.piper_tts import PiperTTSService
 
 # --- Configuración Base ---
 SAMPLE_RATE = 16000
 CHUNK_SIZE = 512
 OLLAMA_URL = os.getenv("OLLAMA_HOST", "http://127.0.0.1:11434") + "/api/generate"
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen2.5:3b")
+STT_MODEL = os.getenv("STT_MODEL", "small")
+STT_BEAM_SIZE = int(os.getenv("STT_BEAM_SIZE", "5"))
+STT_INITIAL_PROMPT = os.getenv("STT_INITIAL_PROMPT", "KodaVox, NextBeam")
+STT_VAD_FILTER = os.getenv("STT_VAD_FILTER", "true").lower() == "true"
+STT_CONDITION_ON_PREVIOUS_TEXT = os.getenv("STT_CONDITION_ON_PREVIOUS_TEXT", "false").lower() == "true"
+INTERACTION_MODE = os.getenv("INTERACTION_MODE", "active").lower()
+WAKE_WORD = os.getenv("WAKE_WORD", "KodaVox")
+VAD_THRESHOLD = float(os.getenv("VAD_THRESHOLD", "0.60"))
+VAD_END_SILENCE_SECONDS = float(os.getenv("VAD_END_SILENCE_SECONDS", "0.70"))
+STT_MIN_SPEECH_SECONDS = float(os.getenv("STT_MIN_SPEECH_SECONDS", "0.60"))
+VAD_PRE_PADDING_SECONDS = float(os.getenv("VAD_PRE_PADDING_SECONDS", "0.20"))
+WAKE_SESSION_TIMEOUT_SECONDS = float(os.getenv("WAKE_SESSION_TIMEOUT_SECONDS", "10"))
 TTS_URL = os.getenv("TTS_URI", "http://127.0.0.1:8001/api/tts/stream")
 TTS_CONFIG_URL = os.getenv("TTS_CONFIG_URI", "http://127.0.0.1:8001/api/config")
 TTS_HEALTH_URL = os.getenv("TTS_HEALTH_URL", "http://127.0.0.1:8001/")
+TTS_PROVIDER = os.getenv("TTS_PROVIDER", "xtts").lower()
+PIPER_MODEL_PATH = os.getenv("PIPER_MODEL_PATH", "models/es_MX-claude-high.onnx")
+PIPER_LENGTH_SCALE = float(os.getenv("PIPER_LENGTH_SCALE", "1.0"))
+PIPER_NOISE_SCALE = os.getenv("PIPER_NOISE_SCALE")
+PIPER_SPEAKER_ID = os.getenv("PIPER_SPEAKER_ID")
 # La voz se gestiona y persiste en el servicio TTS. Solo se reemplaza al
 # habilitar explícitamente esta opción para evitar recalcular latentes al inicio.
 CONFIGURE_TTS_VOICE_ON_START = os.getenv("TTS_CONFIGURE_VOICE_ON_START", "false").lower() == "true"
@@ -48,23 +68,58 @@ class MonolithicEngine:
         
         # 3. STT (Whisper) - Regresamos a GPU pero con CUANTIZACIÓN AGRESIVA (int8_float16)
         # Esto reduce el consumo de VRAM a menos de la mitad que float16, manteniendo la velocidad.
-        print("[Engine] Cargando modelo Whisper Small en GPU (Modo ultra-eficiente int8_float16)...")
+        print(f"[Engine] Cargando modelo Whisper {STT_MODEL} en GPU (Modo ultra-eficiente int8_float16)...")
         device = "cuda" if torch.cuda.is_available() else "cpu"
         # int8_float16 es el truco para GPUs con poca memoria pero que necesitan velocidad
         compute_type = "int8_float16" if device == "cuda" else "int8"
         
-        self.stt_model = WhisperModel("small", device=device, compute_type=compute_type)
+        self.stt_model = WhisperModel(STT_MODEL, device=device, compute_type=compute_type)
         
-        self.stt_prompt = "Hola. Esta es una conversación en español latino. Se mencionan marcas como KodaVox y temas de tecnología."
+        self.stt_prompt = STT_INITIAL_PROMPT
         
         self.is_speaking = False
         self.audio_buffer = []
         self.pre_padding = [] 
         self.recording = False
+        self.silence_samples = 0
+        self.speech_samples = 0
+        self.is_processing = False
+        self.awaiting_user_query = False
+        self.wake_session_active = False
+        self.wake_session_token = 0
+        self.wake_session_timeout_task = None
         self.loop = None
-        self.vad_threshold = 0.4
+        self.vad_threshold = VAD_THRESHOLD
+        self.interaction_mode = INTERACTION_MODE if INTERACTION_MODE in {"active", "wakeword"} else "active"
+        if INTERACTION_MODE != self.interaction_mode:
+            print(f"[Engine] INTERACTION_MODE inválido: {INTERACTION_MODE}. Usando active.")
+        print(f"[Engine] Modo de interacción: {self.interaction_mode}. Umbral VAD: {self.vad_threshold}.")
+        self.piper_tts = None
 
     async def setup_tts(self):
+        if TTS_PROVIDER == "off":
+            print("[Engine] TTS desactivado (TTS_PROVIDER=off).")
+            return
+
+        if TTS_PROVIDER == "piper":
+            try:
+                self.piper_tts = PiperTTSService(
+                    PIPER_MODEL_PATH,
+                    length_scale=PIPER_LENGTH_SCALE,
+                    noise_scale=float(PIPER_NOISE_SCALE) if PIPER_NOISE_SCALE else None,
+                    speaker_id=int(PIPER_SPEAKER_ID) if PIPER_SPEAKER_ID else None,
+                )
+                await asyncio.to_thread(self.piper_tts.load)
+                print(f"[Engine] Piper listo: {PIPER_MODEL_PATH}.")
+            except Exception as error:
+                self.piper_tts = None
+                print(f"[Engine] No se pudo cargar Piper: {error}")
+            return
+
+        if TTS_PROVIDER != "xtts":
+            print(f"[Engine] TTS_PROVIDER inválido: {TTS_PROVIDER}. Usa xtts, piper u off.")
+            return
+
         try:
             async with httpx.AsyncClient() as client:
                 response = await client.get(TTS_HEALTH_URL, timeout=15.0)
@@ -90,7 +145,7 @@ class MonolithicEngine:
         await sio.emit(event, data)
 
     def audio_callback(self, in_data, frame_count, time_info, status):
-        if not self.is_speaking and self.loop: 
+        if not self.is_speaking and not self.is_processing and self.loop:
             audio_array = np.frombuffer(in_data, dtype=np.int16).astype(np.float32)
             energy = int(np.sqrt(np.mean(np.square(audio_array))))
             
@@ -106,55 +161,143 @@ class MonolithicEngine:
             if is_speech:
                 if not self.recording:
                     self.recording = True
+                    if self.interaction_mode == "wakeword":
+                        self.loop.call_soon_threadsafe(self._cancel_wake_session_timeout)
                     self.audio_buffer.extend(self.pre_padding)
                     self.pre_padding = []
+                    self.speech_samples = 0
                     self.loop.call_soon_threadsafe(
                         lambda: asyncio.create_task(self.emit_telemetry('telemetry_vad', {"is_speaking": True}))
                     )
                 self.audio_buffer.extend(audio_float32)
+                self.speech_samples += len(audio_float32)
+                self.silence_samples = 0
             else:
                 if self.recording:
                     self.audio_buffer.extend(audio_float32)
-                    self.recording = False
-                    self.loop.call_soon_threadsafe(
-                        lambda: asyncio.create_task(self.emit_telemetry('telemetry_vad', {"is_speaking": False}))
-                    )
+                    self.silence_samples += len(audio_float32)
 
-                    if len(self.audio_buffer) > SAMPLE_RATE * 0.2:
-                        audio_to_process = np.array(self.audio_buffer, dtype=np.float32)
-                        self.audio_buffer = []
+                    # Una sola ventana silenciosa (~32 ms) no debe cerrar una frase.
+                    if self.silence_samples >= SAMPLE_RATE * VAD_END_SILENCE_SECONDS:
+                        self.recording = False
                         self.loop.call_soon_threadsafe(
-                            lambda: asyncio.create_task(self.process_speech(audio_to_process))
+                            lambda: asyncio.create_task(self.emit_telemetry('telemetry_vad', {"is_speaking": False}))
                         )
-                    else:
+
+                        if self.speech_samples >= SAMPLE_RATE * STT_MIN_SPEECH_SECONDS:
+                            audio_to_process = np.array(self.audio_buffer, dtype=np.float32)
+                            # Marcamos antes de programar la corrutina para no aceptar un
+                            # segundo fragmento mientras Whisper procesa el primero.
+                            self.is_processing = True
+                            self.loop.call_soon_threadsafe(
+                                lambda: asyncio.create_task(self.process_speech(audio_to_process))
+                            )
+                        else:
+                            print("[Engine] Audio descartado: voz demasiado corta para STT.")
                         self.audio_buffer = []
+                        self.silence_samples = 0
+                        self.speech_samples = 0
                 else:
                     self.pre_padding.extend(audio_float32)
-                    if len(self.pre_padding) > SAMPLE_RATE * 0.2:
-                        self.pre_padding = self.pre_padding[-int(SAMPLE_RATE * 0.2):]
+                    if len(self.pre_padding) > SAMPLE_RATE * VAD_PRE_PADDING_SECONDS:
+                        self.pre_padding = self.pre_padding[-int(SAMPLE_RATE * VAD_PRE_PADDING_SECONDS):]
 
         return (in_data, pyaudio.paContinue)
 
     async def process_speech(self, audio_data: np.ndarray):
-        print("[Engine] Transcribiendo (GPU ultra-fast)...")
-        padding = np.zeros(int(SAMPLE_RATE * 0.2), dtype=np.float32)
-        audio_padded = np.concatenate([audio_data, padding])
+        self.is_processing = True
+        try:
+            print("[Engine] Transcribiendo (GPU ultra-fast)...")
+            padding = np.zeros(int(SAMPLE_RATE * 0.2), dtype=np.float32)
+            audio_padded = np.concatenate([audio_data, padding])
 
-        segments, _ = self.stt_model.transcribe(
-            audio_padded, 
-            beam_size=5, 
-            language="es",
-            initial_prompt=self.stt_prompt
-        )
-        text = " ".join([segment.text for segment in segments]).strip()
-        
-        if not text or len(text) < 2 or text.lower() in ["gracias.", "continuará...", "subtitulado por"]:
+            segments, _ = self.stt_model.transcribe(
+                audio_padded,
+                beam_size=STT_BEAM_SIZE,
+                language="es",
+                initial_prompt=self.stt_prompt or None,
+                vad_filter=STT_VAD_FILTER,
+                condition_on_previous_text=STT_CONDITION_ON_PREVIOUS_TEXT,
+            )
+            text = " ".join([segment.text for segment in segments]).strip()
+
+            if not text or len(text) < 2:
+                return
+
+            if self.interaction_mode == "wakeword":
+                if self.awaiting_user_query:
+                    self.awaiting_user_query = False
+                elif self.wake_session_active:
+                    # La sesión sigue abierta: aceptamos turnos posteriores sin repetir wake word.
+                    pass
+                elif not self._contains_wake_word(text):
+                    print(f"[Engine] Ignorado sin wake word: {text}")
+                    return
+                else:
+                    self.wake_session_active = True
+                    text = self._remove_wake_word(text)
+                    if not text:
+                        self.awaiting_user_query = True
+                        self._schedule_wake_session_timeout()
+                        print(f"[Engine] Wake word detectada. Esperando consulta: {WAKE_WORD}.")
+                        return
+
+            print(f"[Usuario]: {text}")
+            await self.emit_telemetry('telemetry_stt', {"text": text})
+            await self.emit_telemetry('telemetry_llm_clear', {})
+            await self.ask_ollama(text)
+        finally:
+            self.is_processing = False
+
+    @staticmethod
+    def _normalize_text(text: str) -> str:
+        normalized = unicodedata.normalize("NFD", text.lower())
+        return "".join(char for char in normalized if unicodedata.category(char) != "Mn")
+
+    def _contains_wake_word(self, text: str) -> bool:
+        normalized_wake = self._normalize_text(WAKE_WORD).replace(" ", "")
+        normalized_text = self._normalize_text(text).replace(" ", "")
+        return normalized_wake in normalized_text
+
+    def _remove_wake_word(self, text: str) -> str:
+        # Whisper puede transcribir “KodaVox” como “Koda Vox”.
+        if self._normalize_text(WAKE_WORD).replace(" ", "") == "kodavox":
+            match = re.search(r"koda\s*vox", text, flags=re.IGNORECASE)
+        else:
+            match = re.search(re.escape(WAKE_WORD), text, flags=re.IGNORECASE)
+        if match:
+            return text[match.end():].lstrip(" ,.:;!?")
+        return ""
+
+    def _cancel_wake_session_timeout(self) -> None:
+        if self.wake_session_timeout_task and not self.wake_session_timeout_task.done():
+            self.wake_session_timeout_task.cancel()
+        self.wake_session_timeout_task = None
+
+    def _schedule_wake_session_timeout(self) -> None:
+        if self.interaction_mode != "wakeword":
             return
 
-        print(f"[Usuario]: {text}")
-        await self.emit_telemetry('telemetry_stt', {"text": text})
-        await self.emit_telemetry('telemetry_llm_clear', {})
-        await self.ask_ollama(text)
+        self._cancel_wake_session_timeout()
+        self.wake_session_token += 1
+        token = self.wake_session_token
+        self.wake_session_timeout_task = asyncio.create_task(
+            self._expire_wake_session(token)
+        )
+
+    async def _expire_wake_session(self, token: int) -> None:
+        try:
+            await asyncio.sleep(WAKE_SESSION_TIMEOUT_SECONDS)
+        except asyncio.CancelledError:
+            return
+
+        if token != self.wake_session_token or self.is_speaking or self.is_processing or self.recording:
+            return
+
+        self.wake_session_active = False
+        self.awaiting_user_query = False
+        self.wake_session_timeout_task = None
+        print(f"[Engine] Sesión expirada; vuelve a decir {WAKE_WORD} para continuar.")
 
     async def ask_ollama(self, text: str):
         print(f"[Engine] Pensando con {OLLAMA_MODEL}...")
@@ -189,9 +332,18 @@ class MonolithicEngine:
             await self.play_tts(sentence_buffer.strip())
 
         self.is_speaking = False
+        if self.wake_session_active:
+            self._schedule_wake_session_timeout()
 
     async def play_tts(self, text: str):
         if not text: return
+        if TTS_PROVIDER == "off":
+            return
+
+        if TTS_PROVIDER == "piper":
+            await self.play_piper_tts(text)
+            return
+
         print(f"[TTS] Sintetizando (XTTS): {text}")
         await self.emit_telemetry('telemetry_tts', {"is_playing": True})
         
@@ -228,6 +380,36 @@ class MonolithicEngine:
             print(f"[TTS Error] {e}")
             
         await self.emit_telemetry('telemetry_tts', {"is_playing": False})
+
+    async def play_piper_tts(self, text: str):
+        """Sintetiza con Piper fuera del event loop y reproduce PCM localmente."""
+        if self.piper_tts is None:
+            print("[Piper Error] Piper no está disponible; revisa el modelo y la configuración.")
+            return
+
+        print(f"[TTS] Sintetizando (Piper): {text}")
+        await self.emit_telemetry('telemetry_tts', {"is_playing": True})
+        try:
+            sample_rate, audio = await asyncio.to_thread(self.piper_tts.synthesize, text)
+            if not audio:
+                return
+
+            stream = self.pa.open(
+                format=pyaudio.paInt16,
+                channels=1,
+                rate=sample_rate,
+                output=True,
+                frames_per_buffer=1024,
+            )
+            try:
+                await asyncio.to_thread(stream.write, audio)
+            finally:
+                stream.stop_stream()
+                stream.close()
+        except Exception as error:
+            print(f"[Piper Error] {error}")
+        finally:
+            await self.emit_telemetry('telemetry_tts', {"is_playing": False})
 
     def run(self):
         self.stream = self.pa.open(format=pyaudio.paInt16, channels=1, rate=SAMPLE_RATE, input=True, frames_per_buffer=CHUNK_SIZE, stream_callback=self.audio_callback)

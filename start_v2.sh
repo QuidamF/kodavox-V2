@@ -4,27 +4,47 @@ echo "=================================================="
 echo "   Iniciando KodaVox V2 (Active Speech)           "
 echo "=================================================="
 
-# 1. Levantar microservicio TTS con Docker Compose
-echo "[1/4] Iniciando servicio TTS (XTTS-v2) en Docker..."
-docker compose up -d tts-service
+# El motor se ejecuta directamente desde este script, por lo que exportamos la
+# configuración común que Docker Compose también lee desde .env.
+if [ -f ".env" ]; then
+    set -a
+    . ./.env
+    set +a
+fi
 
-# XTTS puede tardar varios minutos en descargar/cargar el modelo. No iniciamos
-# el motor hasta que su endpoint de salud pueda aceptar conexiones.
-TTS_HEALTH_URL="${TTS_HEALTH_URL:-http://127.0.0.1:8001/}"
-TTS_WAIT_SECONDS="${TTS_WAIT_SECONDS:-300}"
-echo "   -> Esperando a que TTS esté disponible (máximo ${TTS_WAIT_SECONDS}s)..."
-for ((elapsed = 0; elapsed < TTS_WAIT_SECONDS; elapsed += 2)); do
-    if curl --fail --silent --output /dev/null --max-time 2 "$TTS_HEALTH_URL"; then
-        echo "   -> TTS listo."
-        break
+# 1. Iniciar únicamente el proveedor de voz seleccionado.
+TTS_PROVIDER="${TTS_PROVIDER:-xtts}"
+TTS_SERVICE_STARTED=false
+if [ "$TTS_PROVIDER" = "xtts" ]; then
+    echo "[1/4] Iniciando servicio TTS (XTTS-v2) en Docker..."
+    docker compose up -d tts-service
+    TTS_SERVICE_STARTED=true
+
+    # XTTS puede tardar varios minutos en descargar/cargar el modelo. No iniciamos
+    # el motor hasta que su endpoint de salud pueda aceptar conexiones.
+    TTS_HEALTH_URL="${TTS_HEALTH_URL:-http://127.0.0.1:8001/}"
+    TTS_WAIT_SECONDS="${TTS_WAIT_SECONDS:-300}"
+    echo "   -> Esperando a que TTS esté disponible (máximo ${TTS_WAIT_SECONDS}s)..."
+    for ((elapsed = 0; elapsed < TTS_WAIT_SECONDS; elapsed += 2)); do
+        if curl --fail --silent --output /dev/null --max-time 2 "$TTS_HEALTH_URL"; then
+            echo "   -> TTS listo."
+            break
+        fi
+        sleep 2
+    done
+
+    if ! curl --fail --silent --output /dev/null --max-time 2 "$TTS_HEALTH_URL"; then
+        echo "ERROR: TTS no respondió en ${TTS_WAIT_SECONDS}s; el motor no se iniciará."
+        echo "Últimos registros de tts-service:"
+        docker compose logs --tail=50 tts-service
+        exit 1
     fi
-    sleep 2
-done
-
-if ! curl --fail --silent --output /dev/null --max-time 2 "$TTS_HEALTH_URL"; then
-    echo "ERROR: TTS no respondió en ${TTS_WAIT_SECONDS}s; el motor no se iniciará."
-    echo "Últimos registros de tts-service:"
-    docker compose logs --tail=50 tts-service
+elif [ "$TTS_PROVIDER" = "piper" ]; then
+    echo "[1/4] Usando Piper local; no se iniciará el contenedor XTTS."
+elif [ "$TTS_PROVIDER" = "off" ]; then
+    echo "[1/4] TTS desactivado; no se iniciará un proveedor de voz."
+else
+    echo "ERROR: TTS_PROVIDER inválido: $TTS_PROVIDER (usa xtts, piper u off)."
     exit 1
 fi
 
@@ -68,7 +88,9 @@ cleanup() {
     echo "Deteniendo procesos..."
     kill $ENGINE_PID 2>/dev/null
     kill $VITE_PID 2>/dev/null
-    docker compose stop
+    if [ "$TTS_SERVICE_STARTED" = true ]; then
+        docker compose stop tts-service
+    fi
     echo "KodaVox V2 apagado correctamente."
     exit 0
 }
