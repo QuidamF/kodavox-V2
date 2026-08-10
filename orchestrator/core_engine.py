@@ -14,6 +14,7 @@ from fastapi import FastAPI
 from faster_whisper import WhisperModel
 from contextlib import asynccontextmanager
 from services.piper_tts import PiperTTSService
+from services.llm_provider import LLMFactory
 
 # --- Configuración Base ---
 SAMPLE_RATE = 16000
@@ -95,6 +96,8 @@ class MonolithicEngine:
             print(f"[Engine] INTERACTION_MODE inválido: {INTERACTION_MODE}. Usando active.")
         print(f"[Engine] Modo de interacción: {self.interaction_mode}. Umbral VAD: {self.vad_threshold}.")
         self.piper_tts = None
+        self.llm_provider = LLMFactory.get_provider()
+        print(f"[Engine] Proveedor LLM inicializado: {self.llm_provider.provider_name} ({self.llm_provider.model_name}).")
 
     async def setup_tts(self):
         if TTS_PROVIDER == "off":
@@ -245,7 +248,7 @@ class MonolithicEngine:
             print(f"[Usuario]: {text}")
             await self.emit_telemetry('telemetry_stt', {"text": text})
             await self.emit_telemetry('telemetry_llm_clear', {})
-            await self.ask_ollama(text)
+            await self.ask_llm(text)
         finally:
             self.is_processing = False
 
@@ -299,41 +302,32 @@ class MonolithicEngine:
         self.wake_session_timeout_task = None
         print(f"[Engine] Sesión expirada; vuelve a decir {WAKE_WORD} para continuar.")
 
-    async def ask_ollama(self, text: str):
-        print(f"[Engine] Pensando con {OLLAMA_MODEL}...")
+    async def ask_llm(self, text: str):
+        print(f"[Engine] Pensando con {self.llm_provider.provider_name} ({self.llm_provider.model_name})...")
         self.is_speaking = True 
         
-        payload = {
-            "model": OLLAMA_MODEL,
-            "prompt": f"Eres un asistente de voz llamado KodaVox. Responde en español latino de forma breve y natural. Usuario: {text}",
-            "stream": True
-        }
-        
         sentence_buffer = ""
-        async with httpx.AsyncClient() as client:
-            try:
-                async with client.stream("POST", OLLAMA_URL, json=payload, timeout=60.0) as response:
-                    async for chunk in response.aiter_lines():
-                        if chunk:
-                            data = json.loads(chunk)
-                            token = data.get("response", "")
-                            
-                            if token:
-                                await self.emit_telemetry('telemetry_llm', {"token": token})
-                                sentence_buffer += token
-                                if any(char in token for char in ['.', '!', '?', '\n']):
-                                    await self.play_tts(sentence_buffer.strip())
-                                    sentence_buffer = ""
-                                    
-            except Exception as e:
-                print(f"[Ollama Error] {e}")
-                
+        try:
+            async for token in self.llm_provider.generate_stream(text):
+                if token:
+                    await self.emit_telemetry('telemetry_llm', {"token": token, "provider": self.llm_provider.provider_name})
+                    sentence_buffer += token
+                    if any(char in token for char in ['.', '!', '?', '\n']):
+                        await self.play_tts(sentence_buffer.strip())
+                        sentence_buffer = ""
+        except Exception as error:
+            print(f"[Engine LLM Error] {error}")
+            
         if sentence_buffer.strip():
             await self.play_tts(sentence_buffer.strip())
 
         self.is_speaking = False
         if self.wake_session_active:
             self._schedule_wake_session_timeout()
+
+    async def ask_ollama(self, text: str):
+        """Método de compatibilidad hacia atrás."""
+        await self.ask_llm(text)
 
     async def play_tts(self, text: str):
         if not text: return

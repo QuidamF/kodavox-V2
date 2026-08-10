@@ -11,6 +11,7 @@ function App() {
   const [micEnergy, setMicEnergy] = useState(0);
   const [sttText, setSttText] = useState("");
   const [llmStream, setLlmStream] = useState("");
+  const [llmProvider, setLlmProvider] = useState("");
   const [ttsActive, setTtsActive] = useState(false);
 
   useEffect(() => {
@@ -25,7 +26,10 @@ function App() {
     socket.on('telemetry_mic', (data) => setMicEnergy(data.energy));
     socket.on('telemetry_vad', (data) => setVadActive(data.is_speaking));
     socket.on('telemetry_stt', (data) => setSttText(data.text));
-    socket.on('telemetry_llm', (data) => setLlmStream(prev => prev + data.token));
+    socket.on('telemetry_llm', (data) => {
+      setLlmStream(prev => prev + data.token);
+      if (data.provider) setLlmProvider(data.provider);
+    });
     socket.on('telemetry_llm_clear', () => setLlmStream(""));
     socket.on('telemetry_tts', (data) => setTtsActive(data.is_playing));
 
@@ -89,13 +93,15 @@ function App() {
           </div>
         </div>
 
-        {/* LLM (Ollama) */}
+        {/* LLM */}
         <div className="bg-surface p-6 rounded-xl border border-slate-700/50 shadow-lg lg:col-span-2">
           <div className="flex items-center gap-3 mb-6">
             <div className="p-3 rounded-lg bg-purple-500/20 text-purple-400">
               <Cpu size={24} />
             </div>
-            <h2 className="text-xl font-semibold">Respuesta LLM (Ollama)</h2>
+            <h2 className="text-xl font-semibold">
+              Respuesta LLM {llmProvider ? `(${llmProvider.toUpperCase()})` : ''}
+            </h2>
           </div>
           <div className="bg-slate-900 rounded-lg p-4 min-h-[200px] font-mono text-slate-300 border border-slate-800 whitespace-pre-wrap">
             {llmStream || <span className="text-slate-600">Esperando procesamiento...</span>}
