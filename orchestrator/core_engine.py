@@ -15,6 +15,7 @@ from faster_whisper import WhisperModel
 from contextlib import asynccontextmanager
 from services.piper_tts import PiperTTSService
 from services.llm_provider import LLMFactory
+from services.elevenlabs_tts import ElevenLabsTTSService
 
 # --- Configuración Base ---
 SAMPLE_RATE = 16000
@@ -96,6 +97,7 @@ class MonolithicEngine:
             print(f"[Engine] INTERACTION_MODE inválido: {INTERACTION_MODE}. Usando active.")
         print(f"[Engine] Modo de interacción: {self.interaction_mode}. Umbral VAD: {self.vad_threshold}.")
         self.piper_tts = None
+        self.elevenlabs_tts = None
         self.llm_provider = LLMFactory.get_provider()
         print(f"[Engine] Proveedor LLM inicializado: {self.llm_provider.provider_name} ({self.llm_provider.model_name}).")
 
@@ -119,8 +121,17 @@ class MonolithicEngine:
                 print(f"[Engine] No se pudo cargar Piper: {error}")
             return
 
+        if TTS_PROVIDER == "elevenlabs":
+            try:
+                self.elevenlabs_tts = ElevenLabsTTSService()
+                print(f"[Engine] ElevenLabs listo (Voice ID: {self.elevenlabs_tts.voice_id}).")
+            except Exception as error:
+                self.elevenlabs_tts = None
+                print(f"[Engine] No se pudo inicializar ElevenLabs: {error}")
+            return
+
         if TTS_PROVIDER != "xtts":
-            print(f"[Engine] TTS_PROVIDER inválido: {TTS_PROVIDER}. Usa xtts, piper u off.")
+            print(f"[Engine] TTS_PROVIDER inválido: {TTS_PROVIDER}. Usa xtts, piper, elevenlabs u off.")
             return
 
         try:
@@ -338,6 +349,10 @@ class MonolithicEngine:
             await self.play_piper_tts(text)
             return
 
+        if TTS_PROVIDER == "elevenlabs":
+            await self.play_elevenlabs_tts(text)
+            return
+
         print(f"[TTS] Sintetizando (XTTS): {text}")
         await self.emit_telemetry('telemetry_tts', {"is_playing": True})
         
@@ -402,6 +417,33 @@ class MonolithicEngine:
                 stream.close()
         except Exception as error:
             print(f"[Piper Error] {error}")
+        finally:
+            await self.emit_telemetry('telemetry_tts', {"is_playing": False})
+
+    async def play_elevenlabs_tts(self, text: str):
+        """Sintetiza con ElevenLabs API y reproduce el audio PCM en tiempo real."""
+        if self.elevenlabs_tts is None:
+            self.elevenlabs_tts = ElevenLabsTTSService()
+
+        print(f"[TTS] Sintetizando (ElevenLabs): {text}")
+        await self.emit_telemetry('telemetry_tts', {"is_playing": True})
+        try:
+            stream = self.pa.open(
+                format=pyaudio.paInt16,
+                channels=1,
+                rate=24000,
+                output=True,
+                frames_per_buffer=1024,
+            )
+            try:
+                async for chunk in self.elevenlabs_tts.stream_audio_pcm(text):
+                    if chunk:
+                        await asyncio.to_thread(stream.write, chunk)
+            finally:
+                stream.stop_stream()
+                stream.close()
+        except Exception as error:
+            print(f"[ElevenLabs Error] {error}")
         finally:
             await self.emit_telemetry('telemetry_tts', {"is_playing": False})
 
