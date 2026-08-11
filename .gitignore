@@ -32,17 +32,25 @@ wheels/
 services/stt/models/
 services/tts/voices/*.wav
 services/tts/tts_models/
+services/tts/latents/
 services/rag/data/*
 !services/rag/data/.gitkeep
 services/rag/ollama/
 services/rag/qdrant_storage/
 whisper_models/
 huggingface_cache/
+orchestrator/models/
+orchestrator/data/chroma_db/
+orchestrator/data/engine_state.json
+orchestrator/data/usage_stats.json
 
 # Node (Dashboard)
 dashboard/frontend/node_modules/
 dashboard/frontend/dist/
 dashboard/frontend/.vite/
+dashboard-v2/node_modules/
+dashboard-v2/dist/
+dashboard-v2/.vite/
 
 # Sistema y Editores
 .vscode/
