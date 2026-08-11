@@ -16,7 +16,7 @@ from pydantic import BaseModel
 from faster_whisper import WhisperModel
 from contextlib import asynccontextmanager
 from services.piper_tts import PiperTTSService
-from services.llm_provider import LLMFactory
+from services.llm_provider import LLMFactory, DEFAULT_SYSTEM_PROMPT
 from services.elevenlabs_tts import ElevenLabsTTSService
 from services.rag_chroma import ChromaRAGService
 
@@ -119,11 +119,27 @@ class MonolithicEngine:
                 with open(state_path, "r", encoding="utf-8") as f:
                     state = json.load(f)
                     self.active_rag_collection = state.get("active_rag_collection", os.getenv("RAG_ACTIVE_COLLECTION", ""))
+                    self.personality_prompt = state.get("personality_prompt", DEFAULT_SYSTEM_PROMPT)
+                    
+                    default_voice_id = os.getenv("ELEVENLABS_VOICE_ID", "21m00Tcm4TlvDq8ikWAM")
+                    self.elevenlabs_voices = state.get("elevenlabs_voices", [{"name": "Default (Env)", "id": default_voice_id}])
+                    self.active_voice_id = state.get("active_voice_id", default_voice_id)
+                    self.wake_word = state.get("wake_word", os.getenv("WAKE_WORD", "KodaVox"))
             else:
                 self.active_rag_collection = os.getenv("RAG_ACTIVE_COLLECTION", "")
+                self.personality_prompt = DEFAULT_SYSTEM_PROMPT
+                default_voice_id = os.getenv("ELEVENLABS_VOICE_ID", "21m00Tcm4TlvDq8ikWAM")
+                self.elevenlabs_voices = [{"name": "Default (Env)", "id": default_voice_id}]
+                self.active_voice_id = default_voice_id
+                self.wake_word = os.getenv("WAKE_WORD", "KodaVox")
         except Exception as e:
             print(f"[Engine] Error cargando estado: {e}")
             self.active_rag_collection = os.getenv("RAG_ACTIVE_COLLECTION", "")
+            self.personality_prompt = DEFAULT_SYSTEM_PROMPT
+            default_voice_id = os.getenv("ELEVENLABS_VOICE_ID", "21m00Tcm4TlvDq8ikWAM")
+            self.elevenlabs_voices = [{"name": "Default (Env)", "id": default_voice_id}]
+            self.active_voice_id = default_voice_id
+            self.wake_word = os.getenv("WAKE_WORD", "KodaVox")
 
     def _save_engine_state(self):
         state_path = os.path.join(os.path.dirname(__file__), "data", "engine_state.json")
@@ -131,7 +147,11 @@ class MonolithicEngine:
             os.makedirs(os.path.dirname(state_path), exist_ok=True)
             with open(state_path, "w", encoding="utf-8") as f:
                 json.dump({
-                    "active_rag_collection": self.active_rag_collection
+                    "active_rag_collection": self.active_rag_collection,
+                    "personality_prompt": self.personality_prompt,
+                    "elevenlabs_voices": self.elevenlabs_voices,
+                    "active_voice_id": self.active_voice_id,
+                    "wake_word": self.wake_word
                 }, f, indent=4)
         except Exception as e:
             print(f"[Engine] Error guardando estado: {e}")
@@ -272,6 +292,11 @@ class MonolithicEngine:
 
             if not text or len(text) < 2:
                 return
+                
+            # Filtro anti-alucinaciones: Whisper a veces escupe el initial_prompt cuando hay ruido
+            if text.lower().replace(",", "") == STT_INITIAL_PROMPT.lower().replace(",", ""):
+                print(f"[Engine] Alucinación de Whisper filtrada: {text}")
+                return
 
             if self.interaction_mode == "wakeword":
                 if self.awaiting_user_query:
@@ -288,7 +313,7 @@ class MonolithicEngine:
                     if not text:
                         self.awaiting_user_query = True
                         self._schedule_wake_session_timeout()
-                        print(f"[Engine] Wake word detectada. Esperando consulta: {WAKE_WORD}.")
+                        print(f"[Engine] Wake word detectada. Esperando consulta: {self.wake_word}.")
                         return
 
             print(f"[Usuario]: {text}")
@@ -304,16 +329,16 @@ class MonolithicEngine:
         return "".join(char for char in normalized if unicodedata.category(char) != "Mn")
 
     def _contains_wake_word(self, text: str) -> bool:
-        normalized_wake = self._normalize_text(WAKE_WORD).replace(" ", "")
+        normalized_wake = self._normalize_text(self.wake_word).replace(" ", "")
         normalized_text = self._normalize_text(text).replace(" ", "")
         return normalized_wake in normalized_text
 
     def _remove_wake_word(self, text: str) -> str:
         # Whisper puede transcribir “KodaVox” como “Koda Vox”.
-        if self._normalize_text(WAKE_WORD).replace(" ", "") == "kodavox":
+        if self._normalize_text(self.wake_word).replace(" ", "") == "kodavox":
             match = re.search(r"koda\s*vox", text, flags=re.IGNORECASE)
         else:
-            match = re.search(re.escape(WAKE_WORD), text, flags=re.IGNORECASE)
+            match = re.search(re.escape(self.wake_word), text, flags=re.IGNORECASE)
         if match:
             return text[match.end():].lstrip(" ,.:;!?")
         return ""
@@ -346,7 +371,7 @@ class MonolithicEngine:
         self.wake_session_active = False
         self.awaiting_user_query = False
         self.wake_session_timeout_task = None
-        print(f"[Engine] Sesión expirada; vuelve a decir {WAKE_WORD} para continuar.")
+        print(f"[Engine] Sesión expirada; vuelve a decir {self.wake_word} para continuar.")
 
     async def ask_llm(self, text: str):
         self.is_speaking = True 
@@ -367,7 +392,7 @@ class MonolithicEngine:
         if TTS_PROVIDER == "elevenlabs":
             async def token_generator():
                 try:
-                    async for token in self.llm_provider.generate_stream(prompt):
+                    async for token in self.llm_provider.generate_stream(prompt, system_prompt=self.personality_prompt):
                         if token:
                             await self.emit_telemetry('telemetry_llm', {"token": token, "provider": self.llm_provider.provider_name})
                             yield token
@@ -378,7 +403,7 @@ class MonolithicEngine:
         else:
             sentence_buffer = ""
             try:
-                async for token in self.llm_provider.generate_stream(prompt):
+                async for token in self.llm_provider.generate_stream(prompt, system_prompt=self.personality_prompt):
                     if token:
                         await self.emit_telemetry('telemetry_llm', {"token": token, "provider": self.llm_provider.provider_name})
                         sentence_buffer += token
@@ -481,8 +506,8 @@ class MonolithicEngine:
 
     async def play_elevenlabs_tts(self, text: str):
         """Sintetiza con ElevenLabs API y reproduce el audio PCM en tiempo real."""
-        if self.elevenlabs_tts is None:
-            self.elevenlabs_tts = ElevenLabsTTSService()
+        if self.elevenlabs_tts is None or self.elevenlabs_tts.voice_id != self.active_voice_id:
+            self.elevenlabs_tts = ElevenLabsTTSService(voice_id=self.active_voice_id)
 
         print(f"[TTS] Sintetizando (ElevenLabs): {text}")
         await self.emit_telemetry('telemetry_tts', {"is_playing": True})
@@ -508,8 +533,8 @@ class MonolithicEngine:
 
     async def play_elevenlabs_tts_stream(self, text_iterator):
         """Sintetiza con ElevenLabs WS y reproduce el audio PCM en tiempo real."""
-        if self.elevenlabs_tts is None:
-            self.elevenlabs_tts = ElevenLabsTTSService()
+        if self.elevenlabs_tts is None or self.elevenlabs_tts.voice_id != self.active_voice_id:
+            self.elevenlabs_tts = ElevenLabsTTSService(voice_id=self.active_voice_id)
 
         print("[TTS] Iniciando Input Streaming (ElevenLabs)...")
         await self.emit_telemetry('telemetry_tts', {"is_playing": True})
@@ -595,6 +620,57 @@ async def upload_document(collection: str = Form(...), file: UploadFile = File(.
         return {"message": f"Archivo '{file.filename}' indexado correctamente en '{collection}'."}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+# --- Rutas de Gestión de Configuración (Personalidad y Voces) ---
+
+@app.get("/api/config/personality")
+async def get_personality():
+    return {"personality_prompt": engine.personality_prompt}
+
+@app.post("/api/config/personality")
+async def set_personality(prompt: str = Body(..., embed=True)):
+    engine.personality_prompt = prompt
+    engine._save_engine_state()
+    return {"message": "Personalidad actualizada"}
+
+@app.get("/api/config/voices")
+async def get_voices():
+    return {
+        "voices": engine.elevenlabs_voices,
+        "active_voice_id": engine.active_voice_id
+    }
+
+@app.post("/api/config/voices")
+async def add_voice(name: str = Body(...), id: str = Body(...)):
+    if any(v["id"] == id for v in engine.elevenlabs_voices):
+        raise HTTPException(status_code=400, detail="La voz con este ID ya existe")
+    engine.elevenlabs_voices.append({"name": name, "id": id})
+    engine._save_engine_state()
+    return {"message": f"Voz '{name}' agregada"}
+
+@app.delete("/api/config/voices/{voice_id}")
+async def delete_voice(voice_id: str):
+    engine.elevenlabs_voices = [v for v in engine.elevenlabs_voices if v["id"] != voice_id]
+    engine._save_engine_state()
+    return {"message": "Voz eliminada"}
+
+@app.post("/api/config/voices/active")
+async def set_active_voice(voice_id: str = Body(..., embed=True)):
+    if any(v["id"] == voice_id for v in engine.elevenlabs_voices):
+        engine.active_voice_id = voice_id
+        engine._save_engine_state()
+        return {"message": "Voz activa actualizada"}
+    raise HTTPException(status_code=404, detail="ID de voz no encontrado en la lista")
+
+@app.get("/api/config/wakeword")
+async def get_wakeword():
+    return {"wake_word": engine.wake_word}
+
+@app.post("/api/config/wakeword")
+async def set_wakeword(word: str = Body(..., embed=True)):
+    engine.wake_word = word
+    engine._save_engine_state()
+    return {"message": "Wakeword actualizado exitosamente"}
 
 socket_app = socketio.ASGIApp(sio, app)
 

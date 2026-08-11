@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { io } from 'socket.io-client'
-import { Mic, MicOff, MessageSquare, Cpu, Volume2, Database, Upload, Trash, Plus } from 'lucide-react'
+import { Mic, MicOff, MessageSquare, Cpu, Volume2, Database, Upload, Trash, Plus, User, Settings } from 'lucide-react'
 
 // Nos conectaremos al motor monolítico (cuando esté corriendo en el puerto 5000)
 const SOCKET_URL = 'http://localhost:5000';
@@ -21,6 +21,37 @@ function App() {
   const [newCollectionName, setNewCollectionName] = useState("");
   const [uploadFile, setUploadFile] = useState(null);
   const [isUploading, setIsUploading] = useState(false);
+
+  // Estados de Configuración Extra
+  const [personalityPrompt, setPersonalityPrompt] = useState("");
+  const [elevenlabsVoices, setElevenlabsVoices] = useState([]);
+  const [activeVoiceId, setActiveVoiceId] = useState("");
+  const [newVoiceName, setNewVoiceName] = useState("");
+  const [newVoiceId, setNewVoiceId] = useState("");
+  const [wakeWord, setWakeWord] = useState("");
+
+  const fetchConfig = async () => {
+    try {
+      const resP = await fetch(`${API_URL}/config/personality`);
+      if (resP.ok) {
+        const data = await resP.json();
+        setPersonalityPrompt(data.personality_prompt);
+      }
+      const resV = await fetch(`${API_URL}/config/voices`);
+      if (resV.ok) {
+        const data = await resV.json();
+        setElevenlabsVoices(data.voices);
+        setActiveVoiceId(data.active_voice_id);
+      }
+      const resW = await fetch(`${API_URL}/config/wakeword`);
+      if (resW.ok) {
+        const data = await resW.json();
+        setWakeWord(data.wake_word);
+      }
+    } catch (e) {
+      console.error("Error fetching config:", e);
+    }
+  };
 
   const fetchCollections = async () => {
     try {
@@ -105,6 +136,80 @@ function App() {
     }
   };
 
+  const handleSaveWakeWord = async (e) => {
+    e.preventDefault();
+    try {
+      await fetch(`${API_URL}/config/wakeword`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ word: wakeWord })
+      });
+      alert("Wakeword guardado exitosamente");
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const handleSavePersonality = async (e) => {
+    e.preventDefault();
+    try {
+      await fetch(`${API_URL}/config/personality`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ prompt: personalityPrompt })
+      });
+      alert("Personalidad guardada exitosamente");
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const handleAddVoice = async (e) => {
+    e.preventDefault();
+    if (!newVoiceName.trim() || !newVoiceId.trim()) return;
+    try {
+      const res = await fetch(`${API_URL}/config/voices`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: newVoiceName.trim(), id: newVoiceId.trim() })
+      });
+      if (res.ok) {
+        setNewVoiceName("");
+        setNewVoiceId("");
+        fetchConfig();
+      } else {
+        const err = await res.json();
+        alert(err.detail);
+      }
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const handleDeleteVoice = async (id) => {
+    if (!confirm(`¿Eliminar esta voz?`)) return;
+    try {
+      await fetch(`${API_URL}/config/voices/${id}`, { method: "DELETE" });
+      fetchConfig();
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const handleSetActiveVoice = async (e) => {
+    const id = e.target.value;
+    try {
+      await fetch(`${API_URL}/config/voices/active`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ voice_id: id })
+      });
+      fetchConfig();
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
   useEffect(() => {
     const socket = io(SOCKET_URL, {
       reconnectionAttempts: 5,
@@ -113,6 +218,7 @@ function App() {
     socket.on('connect', () => {
       setConnected(true);
       fetchCollections();
+      fetchConfig();
     });
     socket.on('disconnect', () => setConnected(false));
 
@@ -327,6 +433,112 @@ function App() {
           </div>
         </div>
       </div>
+
+      {/* Panel de Configuración Extra (Personalidad y Voces) */}
+      <div className="mt-8 grid grid-cols-1 lg:grid-cols-2 gap-6">
+        
+        {/* Personalidad */}
+        <div className="bg-surface p-6 rounded-xl border border-slate-700/50 shadow-lg flex flex-col">
+          <div className="flex items-center gap-3 mb-6">
+            <div className="p-3 rounded-lg bg-pink-500/20 text-pink-400">
+              <User size={24} />
+            </div>
+            <h2 className="text-xl font-semibold flex-1">Personalidad (System Prompt)</h2>
+          </div>
+          
+          <form onSubmit={handleSaveWakeWord} className="mb-4 flex gap-2">
+            <div className="flex-1 bg-slate-900 border border-slate-700 rounded-lg flex items-center px-3">
+              <span className="text-slate-400 text-sm mr-2 font-medium">Wakeword:</span>
+              <input 
+                type="text" 
+                value={wakeWord}
+                onChange={(e) => setWakeWord(e.target.value)}
+                className="bg-transparent border-none outline-none text-slate-200 text-sm py-2 w-full"
+                placeholder="ej: kodavox"
+              />
+            </div>
+            <button type="submit" className="bg-slate-700 hover:bg-slate-600 text-white px-3 py-2 rounded-lg text-sm font-medium transition-colors">
+              Actualizar
+            </button>
+          </form>
+
+          <form onSubmit={handleSavePersonality} className="flex flex-col flex-1">
+            <textarea
+              className="flex-1 bg-slate-900 border border-slate-700 rounded-lg p-4 text-sm text-slate-200 outline-none focus:border-pink-500 mb-4 min-h-[150px] resize-y"
+              value={personalityPrompt}
+              onChange={(e) => setPersonalityPrompt(e.target.value)}
+              placeholder="Ej: Eres un asistente pirata..."
+            />
+            <button type="submit" className="bg-pink-600 hover:bg-pink-500 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors self-end">
+              Guardar Personalidad
+            </button>
+          </form>
+        </div>
+
+        {/* Voces ElevenLabs */}
+        <div className="bg-surface p-6 rounded-xl border border-slate-700/50 shadow-lg flex flex-col">
+          <div className="flex items-center gap-3 mb-6">
+            <div className="p-3 rounded-lg bg-indigo-500/20 text-indigo-400">
+              <Settings size={24} />
+            </div>
+            <h2 className="text-xl font-semibold flex-1">Voces ElevenLabs</h2>
+            <select 
+              className="bg-slate-800 border border-slate-700 rounded-lg px-3 py-1.5 text-slate-200 outline-none focus:border-indigo-500 text-sm max-w-[150px]"
+              value={activeVoiceId}
+              onChange={handleSetActiveVoice}
+            >
+              {elevenlabsVoices.map(v => (
+                <option key={v.id} value={v.id}>{v.name}</option>
+              ))}
+            </select>
+          </div>
+
+          <div className="bg-slate-800/50 p-4 rounded-lg border border-slate-700 mb-4">
+            <form onSubmit={handleAddVoice} className="flex flex-col sm:flex-row gap-2">
+              <input 
+                type="text" 
+                placeholder="Nombre (ej. Drew)" 
+                value={newVoiceName}
+                onChange={(e) => setNewVoiceName(e.target.value)}
+                className="flex-1 bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 focus:outline-none focus:border-indigo-500"
+              />
+              <input 
+                type="text" 
+                placeholder="ID de la voz" 
+                value={newVoiceId}
+                onChange={(e) => setNewVoiceId(e.target.value)}
+                className="flex-1 bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 focus:outline-none focus:border-indigo-500"
+              />
+              <button 
+                type="submit"
+                className="bg-slate-700 hover:bg-slate-600 px-3 py-2 rounded-lg transition-colors text-white flex-shrink-0"
+              >
+                <Plus size={18} />
+              </button>
+            </form>
+          </div>
+
+          <div className="space-y-2 flex-1 max-h-[250px] overflow-y-auto pr-2">
+            {elevenlabsVoices.map(v => (
+              <div key={v.id} className={`flex items-center justify-between p-3 rounded-lg border ${v.id === activeVoiceId ? 'bg-indigo-500/10 border-indigo-500/50' : 'bg-slate-900/50 border-slate-800/50'}`}>
+                <div>
+                  <div className="text-sm font-medium text-slate-300">{v.name} {v.id === activeVoiceId && <span className="text-xs bg-indigo-500/20 text-indigo-400 px-2 py-0.5 rounded ml-2">Activa</span>}</div>
+                  <div className="text-xs text-slate-500">{v.id}</div>
+                </div>
+                <button 
+                  onClick={() => handleDeleteVoice(v.id)}
+                  className="text-red-400 hover:bg-red-500/10 p-1.5 rounded-md transition-colors"
+                  disabled={elevenlabsVoices.length <= 1}
+                >
+                  <Trash size={16} />
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+
+      </div>
+
     </div>
   )
 }

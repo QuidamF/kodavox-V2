@@ -1,3 +1,63 @@
 {
-    "active_rag_collection": "Onepiece"
+    "active_rag_collection": "Onepiece",
+    "personality_prompt": "Eres un asistente de voz llamado KodaVox. Responde en espa\u00f1ol latino de forma breve y natural.",
+    "elevenlabs_voices": [
+        {
+            "name": "Default (Env)",
+            "id": "21m00Tcm4TlvDq8ikWAM"
+        },
+        {
+            "name": "Adam",
+            "id": "pNInz6obpgDQGcFmaJgB"
+        },
+        {
+            "name": "Antonio",
+            "id": "ErXwobaYiN019PkySvjV"
+        },
+        {
+            "name": "Drew",
+            "id": "29vD33N1CtxCmqQRPOHJ"
+        },
+        {
+            "name": "Josh",
+            "id": "TxGEqnHWrfWFTfGW9XjX"
+        },
+        {
+            "name": "Arnold",
+            "id": "VR6AewLTigWG4xSOukaG"
+        },
+        {
+            "name": "Gigi",
+            "id": "jBpfuIE2acCO8z3wKNLl"
+        },
+        {
+            "name": "Matilda",
+            "id": "XrExE9yKIg1WjnnlVkGX"
+        },
+        {
+            "name": "Freya",
+            "id": "jsCqWAovK2zikIGpzIeb"
+        },
+        {
+            "name": "Serena",
+            "id": "pMsXgVXv3BLzUgSXRplE"
+        },
+        {
+            "name": "Grace",
+            "id": "oWAxZDx7w5VEj9dCyTzz"
+        },
+        {
+            "name": "Nicole",
+            "id": "piTKgcLEGmPE4e6mJC43"
+        },
+        {
+            "name": "Glinda",
+            "id": "z9fAnlkpzviPz146aGWa"
+        },
+        {
+            "name": "Doroty",
+            "id": "thT5kO5VTVVNEHMDls2S"
+        }
+    ],
+    "active_voice_id": "21m00Tcm4TlvDq8ikWAM"
 }

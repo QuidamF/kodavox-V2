@@ -13,9 +13,9 @@ DEFAULT_MODEL_ID = "eleven_multilingual_v2"
 class ElevenLabsTTSService:
     """Servicio para la síntesis de voz en streaming utilizando ElevenLabs API."""
 
-    def __init__(self):
+    def __init__(self, voice_id: str = None):
         self.api_key = os.getenv("ELEVENLABS_API_KEY", "")
-        self.voice_id = os.getenv("ELEVENLABS_VOICE_ID", DEFAULT_VOICE_ID)
+        self.voice_id = voice_id or os.getenv("ELEVENLABS_VOICE_ID", DEFAULT_VOICE_ID)
         self.model_id = os.getenv("ELEVENLABS_MODEL_ID", DEFAULT_MODEL_ID)
 
     async def stream_audio_pcm(self, text: str) -> AsyncGenerator[bytes, None]:
