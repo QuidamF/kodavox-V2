@@ -364,20 +364,32 @@ class MonolithicEngine:
 
         print(f"[Engine] Pensando con {self.llm_provider.provider_name} ({self.llm_provider.model_name})...")
         
-        sentence_buffer = ""
-        try:
-            async for token in self.llm_provider.generate_stream(prompt):
-                if token:
-                    await self.emit_telemetry('telemetry_llm', {"token": token, "provider": self.llm_provider.provider_name})
-                    sentence_buffer += token
-                    if any(char in token for char in ['.', '!', '?', '\n']):
-                        await self.play_tts(sentence_buffer.strip())
-                        sentence_buffer = ""
-        except Exception as error:
-            print(f"[Engine LLM Error] {error}")
+        if TTS_PROVIDER == "elevenlabs":
+            async def token_generator():
+                try:
+                    async for token in self.llm_provider.generate_stream(prompt):
+                        if token:
+                            await self.emit_telemetry('telemetry_llm', {"token": token, "provider": self.llm_provider.provider_name})
+                            yield token
+                except Exception as error:
+                    print(f"[Engine LLM Error] {error}")
             
-        if sentence_buffer.strip():
-            await self.play_tts(sentence_buffer.strip())
+            await self.play_elevenlabs_tts_stream(token_generator())
+        else:
+            sentence_buffer = ""
+            try:
+                async for token in self.llm_provider.generate_stream(prompt):
+                    if token:
+                        await self.emit_telemetry('telemetry_llm', {"token": token, "provider": self.llm_provider.provider_name})
+                        sentence_buffer += token
+                        if any(char in token for char in ['.', '!', '?', '\n']):
+                            await self.play_tts(sentence_buffer.strip())
+                            sentence_buffer = ""
+            except Exception as error:
+                print(f"[Engine LLM Error] {error}")
+                
+            if sentence_buffer.strip():
+                await self.play_tts(sentence_buffer.strip())
 
         self.is_speaking = False
         if self.wake_session_active:
@@ -491,6 +503,33 @@ class MonolithicEngine:
                 stream.close()
         except Exception as error:
             print(f"[ElevenLabs Error] {error}")
+        finally:
+            await self.emit_telemetry('telemetry_tts', {"is_playing": False})
+
+    async def play_elevenlabs_tts_stream(self, text_iterator):
+        """Sintetiza con ElevenLabs WS y reproduce el audio PCM en tiempo real."""
+        if self.elevenlabs_tts is None:
+            self.elevenlabs_tts = ElevenLabsTTSService()
+
+        print("[TTS] Iniciando Input Streaming (ElevenLabs)...")
+        await self.emit_telemetry('telemetry_tts', {"is_playing": True})
+        try:
+            stream = self.pa.open(
+                format=pyaudio.paInt16,
+                channels=1,
+                rate=24000,
+                output=True,
+                frames_per_buffer=1024,
+            )
+            try:
+                async for chunk in self.elevenlabs_tts.stream_input_pcm(text_iterator):
+                    if chunk:
+                        await asyncio.to_thread(stream.write, chunk)
+            finally:
+                stream.stop_stream()
+                stream.close()
+        except Exception as error:
+            print(f"[ElevenLabs Stream Error] {error}")
         finally:
             await self.emit_telemetry('telemetry_tts', {"is_playing": False})
 
