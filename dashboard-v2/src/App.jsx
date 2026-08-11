@@ -44,6 +44,7 @@ function App() {
   const [usageStats, setUsageStats] = useState({});
   const [isCheckingHealth, setIsCheckingHealth] = useState(false);
   const [nativeAudioOutput, setNativeAudioOutput] = useState(true);
+  const [robotFaceSync, setRobotFaceSync] = useState(false);
 
   // Pricing (per 1M)
   const [costRates, setCostRates] = useState(() => {
@@ -80,6 +81,7 @@ function App() {
       if (resH.ok) {
         const data = await resH.json();
         setNativeAudioOutput(data.native_audio_output);
+        setRobotFaceSync(data.robot_face_sync);
       }
     } catch (e) {
       console.error("Error fetching config:", e);
@@ -261,14 +263,15 @@ function App() {
     }
   };
 
-  const handleSaveHardware = async (newVal) => {
+  const handleSaveHardware = async (payload) => {
     try {
       await fetch(`${API_URL}/config/hardware`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ native_audio_output: newVal })
+        body: JSON.stringify(payload)
       });
-      setNativeAudioOutput(newVal);
+      if ("native_audio_output" in payload) setNativeAudioOutput(payload.native_audio_output);
+      if ("robot_face_sync" in payload) setRobotFaceSync(payload.robot_face_sync);
     } catch (e) {
       console.error(e);
     }
@@ -789,15 +792,28 @@ function App() {
                 </div>
 
                 <h3 className="font-semibold text-lg text-slate-200 mt-8 mb-4 border-b border-slate-800 pb-2">Configuración de Hardware (Headless Mode)</h3>
-                <div className="bg-slate-950 p-6 rounded-xl border border-slate-800 flex items-center justify-between">
-                  <div>
-                    <h4 className="font-medium text-slate-200">Salida de Audio Nativa</h4>
-                    <p className="text-sm text-slate-500 mt-1">Si se desactiva, el motor no usará las bocinas físicas del servidor. Útil si el audio se reproduce desde un cliente externo vía WebSocket (Avatar 3D / Web App).</p>
+                <div className="bg-slate-950 p-6 rounded-xl border border-slate-800 flex flex-col gap-4">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <h4 className="font-medium text-slate-200">Salida de Audio Nativa</h4>
+                      <p className="text-sm text-slate-500 mt-1">Si se desactiva, el motor no usará las bocinas físicas del servidor.</p>
+                    </div>
+                    <label className="relative inline-flex items-center cursor-pointer">
+                      <input type="checkbox" className="sr-only peer" checked={nativeAudioOutput} onChange={(e) => handleSaveHardware({native_audio_output: e.target.checked})} />
+                      <div className="w-11 h-6 bg-slate-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-emerald-500"></div>
+                    </label>
                   </div>
-                  <label className="relative inline-flex items-center cursor-pointer">
-                    <input type="checkbox" className="sr-only peer" checked={nativeAudioOutput} onChange={(e) => handleSaveHardware(e.target.checked)} />
-                    <div className="w-11 h-6 bg-slate-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-emerald-500"></div>
-                  </label>
+                  
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <h4 className="font-medium text-slate-200">Sincronización de Estados (Robot Face)</h4>
+                      <p className="text-sm text-slate-500 mt-1">Conecta KodaVox al servidor WebSocket existente en el puerto 8760 para inyectar comandos de animaciones faciales (Escuchando, Pensando).</p>
+                    </div>
+                    <label className="relative inline-flex items-center cursor-pointer">
+                      <input type="checkbox" className="sr-only peer" checked={robotFaceSync} onChange={(e) => handleSaveHardware({robot_face_sync: e.target.checked})} />
+                      <div className="w-11 h-6 bg-slate-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-emerald-500"></div>
+                    </label>
+                  </div>
                 </div>
               </div>
             </div>

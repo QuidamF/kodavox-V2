@@ -10,6 +10,7 @@ import json
 import sys
 import re
 import unicodedata
+import websockets
 from fastapi import FastAPI, UploadFile, File, Form, Body, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -133,6 +134,7 @@ class MonolithicEngine:
                     self.wake_word = state.get("wake_word", os.getenv("WAKE_WORD", "KodaVox"))
                     self.wake_session_timeout = state.get("wake_session_timeout", int(float(os.getenv("WAKE_SESSION_TIMEOUT_SECONDS", "10"))))
                     self.native_audio_output = state.get("native_audio_output", True)
+                    self.robot_face_sync = state.get("robot_face_sync", False)
             else:
                 self.active_rag_collection = os.getenv("RAG_ACTIVE_COLLECTION", "")
                 self.personality_prompt = DEFAULT_SYSTEM_PROMPT
@@ -142,6 +144,7 @@ class MonolithicEngine:
                 self.wake_word = os.getenv("WAKE_WORD", "KodaVox")
                 self.wake_session_timeout = int(float(os.getenv("WAKE_SESSION_TIMEOUT_SECONDS", "10")))
                 self.native_audio_output = True
+                self.robot_face_sync = False
         except Exception as e:
             print(f"[Engine] Error cargando estado: {e}")
             self.active_rag_collection = os.getenv("RAG_ACTIVE_COLLECTION", "")
@@ -152,6 +155,7 @@ class MonolithicEngine:
             self.wake_word = os.getenv("WAKE_WORD", "KodaVox")
             self.wake_session_timeout = int(float(os.getenv("WAKE_SESSION_TIMEOUT_SECONDS", "10")))
             self.native_audio_output = True
+            self.robot_face_sync = False
 
     def _save_engine_state(self):
         state_path = os.path.join(os.path.dirname(__file__), "data", "engine_state.json")
@@ -165,7 +169,8 @@ class MonolithicEngine:
                     "active_voice_id": self.active_voice_id,
                     "wake_word": self.wake_word,
                     "wake_session_timeout": self.wake_session_timeout,
-                    "native_audio_output": self.native_audio_output
+                    "native_audio_output": self.native_audio_output,
+                    "robot_face_sync": getattr(self, 'robot_face_sync', False)
                 }, f, indent=4)
         except Exception as e:
             print(f"[Engine] Error guardando estado: {e}")
@@ -233,6 +238,33 @@ class MonolithicEngine:
             "state": self.engine_state,
             "session_active": self.wake_session_active
         })
+        
+        # Robot Face WS Sync
+        if getattr(self, 'robot_face_sync', False):
+            # Si estamos en modo wakeword y la sesión está inactiva, forzamos estado de reposo (Neutral)
+            if self.interaction_mode == "wakeword" and not self.wake_session_active:
+                mood = "Neutral"
+            else:
+                mood_map = {
+                    "idle": "Alerta" if self.wake_session_active else "Neutral",
+                    "listening": "Escuchando",
+                    "processing": "Pensando",
+                    "speaking": "Feliz"
+                }
+                mood = mood_map.get(new_state, "Neutral")
+            try:
+                # Fire and forget WS message directly to avoid blocking
+                asyncio.create_task(self._send_robot_face_mood(mood))
+            except Exception as e:
+                pass
+
+    async def _send_robot_face_mood(self, mood: str):
+        try:
+            async with websockets.connect("ws://localhost:8760", open_timeout=1) as ws:
+                payload = json.dumps({"type": "mood", "mood": mood})
+                await ws.send(payload)
+        except Exception:
+            pass
 
     def audio_callback(self, in_data, frame_count, time_info, status):
         if self.is_speaking or self.is_processing:
@@ -346,6 +378,7 @@ class MonolithicEngine:
                         self.awaiting_user_query = True
                         self._schedule_wake_session_timeout()
                         print(f"[Engine] Wake word detectada. Esperando consulta: {self.wake_word}.")
+                        asyncio.create_task(self._set_engine_state("idle"))
                         return
 
             print(f"[Usuario]: {text}")
@@ -405,6 +438,7 @@ class MonolithicEngine:
         self.wake_session_timeout_task = None
         self.conversation_history.clear()
         print(f"[Engine] Sesión expirada; vuelve a decir {self.wake_word} para continuar.")
+        await self._set_engine_state("idle")
 
     async def ask_llm(self, text: str):
         self.is_speaking = True 
@@ -749,12 +783,17 @@ async def set_wakeword(word: str = Body(None, embed=True), timeout: int = Body(N
 @app.get("/api/config/hardware")
 async def get_hardware():
     return {
-        "native_audio_output": engine.native_audio_output
+        "native_audio_output": getattr(engine, 'native_audio_output', True),
+        "robot_face_sync": getattr(engine, 'robot_face_sync', False)
     }
 
 @app.post("/api/config/hardware")
-async def set_hardware(native_audio_output: bool = Body(..., embed=True)):
-    engine.native_audio_output = native_audio_output
+async def set_hardware(payload: dict = Body(...)):
+    if "native_audio_output" in payload:
+        engine.native_audio_output = payload["native_audio_output"]
+    if "robot_face_sync" in payload:
+        engine.robot_face_sync = payload["robot_face_sync"]
+        
     engine._save_engine_state()
     return {"message": "Configuración de hardware actualizada exitosamente"}
 
