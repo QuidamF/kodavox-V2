@@ -10,12 +10,15 @@ import json
 import sys
 import re
 import unicodedata
-from fastapi import FastAPI
+from fastapi import FastAPI, UploadFile, File, Form, Body, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 from faster_whisper import WhisperModel
 from contextlib import asynccontextmanager
 from services.piper_tts import PiperTTSService
 from services.llm_provider import LLMFactory
 from services.elevenlabs_tts import ElevenLabsTTSService
+from services.rag_chroma import ChromaRAGService
 
 # --- Configuración Base ---
 SAMPLE_RATE = 16000
@@ -92,14 +95,46 @@ class MonolithicEngine:
         self.wake_session_timeout_task = None
         self.loop = None
         self.vad_threshold = VAD_THRESHOLD
-        self.interaction_mode = INTERACTION_MODE if INTERACTION_MODE in {"active", "wakeword"} else "active"
-        if INTERACTION_MODE != self.interaction_mode:
+        self.interaction_mode = INTERACTION_MODE
+        if self.interaction_mode not in ["active", "wakeword"]:
             print(f"[Engine] INTERACTION_MODE inválido: {INTERACTION_MODE}. Usando active.")
         print(f"[Engine] Modo de interacción: {self.interaction_mode}. Umbral VAD: {self.vad_threshold}.")
         self.piper_tts = None
         self.elevenlabs_tts = None
+        
+        # RAG Local Inicialización
+        self.rag_service = ChromaRAGService()
+        self.active_rag_collection = ""
+        self._load_engine_state()
+        if self.active_rag_collection:
+            print(f"[Engine] RAG Activado con colección: {self.active_rag_collection}")
+            
         self.llm_provider = LLMFactory.get_provider()
         print(f"[Engine] Proveedor LLM inicializado: {self.llm_provider.provider_name} ({self.llm_provider.model_name}).")
+
+    def _load_engine_state(self):
+        state_path = os.path.join(os.path.dirname(__file__), "data", "engine_state.json")
+        try:
+            if os.path.exists(state_path):
+                with open(state_path, "r", encoding="utf-8") as f:
+                    state = json.load(f)
+                    self.active_rag_collection = state.get("active_rag_collection", os.getenv("RAG_ACTIVE_COLLECTION", ""))
+            else:
+                self.active_rag_collection = os.getenv("RAG_ACTIVE_COLLECTION", "")
+        except Exception as e:
+            print(f"[Engine] Error cargando estado: {e}")
+            self.active_rag_collection = os.getenv("RAG_ACTIVE_COLLECTION", "")
+
+    def _save_engine_state(self):
+        state_path = os.path.join(os.path.dirname(__file__), "data", "engine_state.json")
+        try:
+            os.makedirs(os.path.dirname(state_path), exist_ok=True)
+            with open(state_path, "w", encoding="utf-8") as f:
+                json.dump({
+                    "active_rag_collection": self.active_rag_collection
+                }, f, indent=4)
+        except Exception as e:
+            print(f"[Engine] Error guardando estado: {e}")
 
     async def setup_tts(self):
         if TTS_PROVIDER == "off":
@@ -314,12 +349,24 @@ class MonolithicEngine:
         print(f"[Engine] Sesión expirada; vuelve a decir {WAKE_WORD} para continuar.")
 
     async def ask_llm(self, text: str):
-        print(f"[Engine] Pensando con {self.llm_provider.provider_name} ({self.llm_provider.model_name})...")
         self.is_speaking = True 
+        
+        # 1. Inyección de Contexto RAG
+        prompt = text
+        if self.active_rag_collection:
+            try:
+                context = await asyncio.to_thread(self.rag_service.get_relevant_context, self.active_rag_collection, text)
+                if context:
+                    print(f"[Engine] Contexto RAG recuperado de '{self.active_rag_collection}'")
+                    prompt = f"Utiliza la siguiente información de la Base de Conocimientos para responder a la pregunta del usuario. Si la información no responde la pregunta, usa tu propio conocimiento pero dale prioridad al contexto dado.\n\nContexto:\n{context}\n\nPregunta del Usuario:\n{text}"
+            except Exception as e:
+                print(f"[Engine RAG Error] {e}")
+
+        print(f"[Engine] Pensando con {self.llm_provider.provider_name} ({self.llm_provider.model_name})...")
         
         sentence_buffer = ""
         try:
-            async for token in self.llm_provider.generate_stream(text):
+            async for token in self.llm_provider.generate_stream(prompt):
                 if token:
                     await self.emit_telemetry('telemetry_llm', {"token": token, "provider": self.llm_provider.provider_name})
                     sentence_buffer += token
@@ -466,6 +513,50 @@ async def lifespan(app: FastAPI):
     engine.pa.terminate()
 
 app = FastAPI(lifespan=lifespan)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# --- Rutas de Gestión de RAG (ChromaDB) ---
+
+@app.get("/api/rag/collections")
+async def get_collections():
+    collections = engine.rag_service.list_collections()
+    return {"collections": collections, "active": engine.active_rag_collection}
+
+@app.post("/api/rag/collections")
+async def create_collection(name: str = Body(..., embed=True)):
+    engine.rag_service.create_collection(name)
+    return {"message": f"Colección '{name}' creada o ya existente."}
+
+@app.delete("/api/rag/collections/{name}")
+async def delete_collection(name: str):
+    engine.rag_service.delete_collection(name)
+    if engine.active_rag_collection == name:
+        engine.active_rag_collection = ""
+        engine._save_engine_state()
+    return {"message": f"Colección '{name}' eliminada."}
+
+@app.post("/api/rag/active")
+async def set_active_collection(name: str = Body(..., embed=True)):
+    engine.active_rag_collection = name if name.lower() != "none" else ""
+    engine._save_engine_state()
+    return {"message": f"Colección activa cambiada a '{engine.active_rag_collection}'"}
+
+@app.post("/api/rag/upload")
+async def upload_document(collection: str = Form(...), file: UploadFile = File(...)):
+    try:
+        content = await file.read()
+        engine.rag_service.add_document(collection, file.filename, content)
+        return {"message": f"Archivo '{file.filename}' indexado correctamente en '{collection}'."}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
 socket_app = socketio.ASGIApp(sio, app)
 
 if __name__ == "__main__":

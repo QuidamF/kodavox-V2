@@ -41,10 +41,12 @@ if [ "$TTS_PROVIDER" = "xtts" ]; then
     fi
 elif [ "$TTS_PROVIDER" = "piper" ]; then
     echo "[1/4] Usando Piper local; no se iniciará el contenedor XTTS."
+elif [ "$TTS_PROVIDER" = "elevenlabs" ]; then
+    echo "[1/4] Usando ElevenLabs (Nube); no se iniciará el contenedor XTTS."
 elif [ "$TTS_PROVIDER" = "off" ]; then
     echo "[1/4] TTS desactivado; no se iniciará un proveedor de voz."
 else
-    echo "ERROR: TTS_PROVIDER inválido: $TTS_PROVIDER (usa xtts, piper u off)."
+    echo "ERROR: TTS_PROVIDER inválido: $TTS_PROVIDER (usa xtts, piper, elevenlabs u off)."
     exit 1
 fi
 

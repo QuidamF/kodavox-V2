@@ -1,9 +1,10 @@
 import { useState, useEffect } from 'react'
 import { io } from 'socket.io-client'
-import { Mic, MicOff, Activity, MessageSquare, Cpu, Volume2 } from 'lucide-react'
+import { Mic, MicOff, MessageSquare, Cpu, Volume2, Database, Upload, Trash, Plus } from 'lucide-react'
 
 // Nos conectaremos al motor monolítico (cuando esté corriendo en el puerto 5000)
 const SOCKET_URL = 'http://localhost:5000';
+const API_URL = 'http://localhost:5000/api';
 
 function App() {
   const [connected, setConnected] = useState(false);
@@ -14,12 +15,105 @@ function App() {
   const [llmProvider, setLlmProvider] = useState("");
   const [ttsActive, setTtsActive] = useState(false);
 
+  // Estados de RAG
+  const [collections, setCollections] = useState([]);
+  const [activeCollection, setActiveCollection] = useState("");
+  const [newCollectionName, setNewCollectionName] = useState("");
+  const [uploadFile, setUploadFile] = useState(null);
+  const [isUploading, setIsUploading] = useState(false);
+
+  const fetchCollections = async () => {
+    try {
+      const res = await fetch(`${API_URL}/rag/collections`);
+      if (res.ok) {
+        const data = await res.json();
+        setCollections(data.collections);
+        setActiveCollection(data.active);
+      }
+    } catch (e) {
+      console.error("Error fetching collections:", e);
+    }
+  };
+
+  const handleCreateCollection = async (e) => {
+    e.preventDefault();
+    if (!newCollectionName.trim()) return;
+    try {
+      await fetch(`${API_URL}/rag/collections`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: newCollectionName.trim() })
+      });
+      setNewCollectionName("");
+      fetchCollections();
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const handleDeleteCollection = async (name) => {
+    if (!confirm(`¿Eliminar colección '${name}'?`)) return;
+    try {
+      await fetch(`${API_URL}/rag/collections/${name}`, { method: "DELETE" });
+      fetchCollections();
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const handleSetActive = async (e) => {
+    const name = e.target.value;
+    try {
+      await fetch(`${API_URL}/rag/active`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: name })
+      });
+      fetchCollections();
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const handleUpload = async (e) => {
+    e.preventDefault();
+    const targetCollection = activeCollection || (collections.length > 0 ? collections[0] : null);
+    if (!uploadFile || !targetCollection) return;
+    
+    setIsUploading(true);
+    const formData = new FormData();
+    formData.append("collection", targetCollection);
+    formData.append("file", uploadFile);
+
+    try {
+      const res = await fetch(`${API_URL}/rag/upload`, {
+        method: "POST",
+        body: formData
+      });
+      if (res.ok) {
+        alert("Archivo subido con éxito");
+        setUploadFile(null);
+      } else {
+        const err = await res.json();
+        alert(`Error: ${err.detail}`);
+      }
+    } catch (e) {
+      console.error(e);
+      alert("Error al subir archivo");
+    } finally {
+      setIsUploading(false);
+    }
+  };
+
   useEffect(() => {
     const socket = io(SOCKET_URL, {
       reconnectionAttempts: 5,
     });
 
-    socket.on('connect', () => setConnected(true));
+    socket.on('connect', () => {
+      setConnected(true);
+      fetchCollections();
+    });
     socket.on('disconnect', () => setConnected(false));
 
     // Eventos de telemetría esperados desde el motor monolítico
@@ -121,6 +215,117 @@ function App() {
           </div>
         </div>
 
+      </div>
+
+      {/* Panel de Gestión RAG */}
+      <div className="mt-8 bg-surface p-6 rounded-xl border border-slate-700/50 shadow-lg">
+        <div className="flex items-center gap-3 mb-6">
+          <div className="p-3 rounded-lg bg-teal-500/20 text-teal-400">
+            <Database size={24} />
+          </div>
+          <h2 className="text-xl font-semibold flex-1">Base de Conocimientos (RAG)</h2>
+          <div className="flex items-center gap-2">
+            <span className="text-sm text-slate-400">Cerebro Activo:</span>
+            <select 
+              className="bg-slate-800 border border-slate-700 rounded-lg px-3 py-1.5 text-slate-200 outline-none focus:border-teal-500"
+              value={activeCollection}
+              onChange={handleSetActive}
+            >
+              <option value="">-- Ninguno (Desactivado) --</option>
+              {collections.map(c => (
+                <option key={c} value={c}>{c}</option>
+              ))}
+            </select>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+          {/* Subida de Archivos */}
+          <div className="bg-slate-800/50 p-5 rounded-lg border border-slate-700">
+            <h3 className="font-medium text-slate-300 mb-4 flex items-center gap-2">
+              <Upload size={18} /> Subir Documento (.txt, .md, .pdf)
+            </h3>
+            
+            <form onSubmit={handleUpload} className="space-y-4">
+              {collections.length === 0 ? (
+                <p className="text-sm text-amber-400">Crea una colección primero para subir archivos.</p>
+              ) : (
+                <>
+                  <div className="flex flex-col gap-1">
+                    <label className="text-xs text-slate-400">Colección Destino:</label>
+                    <select 
+                      className="bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 outline-none focus:border-teal-500"
+                      value={activeCollection || collections[0]}
+                      onChange={(e) => setActiveCollection(e.target.value)}
+                    >
+                      {collections.map(c => (
+                        <option key={c} value={c}>{c}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <input 
+                    type="file" 
+                    accept=".txt,.md,.pdf,.json,.csv"
+                    onChange={(e) => setUploadFile(e.target.files[0])}
+                    className="block w-full text-sm text-slate-400
+                      file:mr-4 file:py-2 file:px-4
+                      file:rounded-full file:border-0
+                      file:text-sm file:font-semibold
+                      file:bg-teal-500/10 file:text-teal-400
+                      hover:file:bg-teal-500/20"
+                  />
+                  <button 
+                    type="submit" 
+                    disabled={isUploading || !uploadFile}
+                    className="bg-teal-600 hover:bg-teal-500 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors disabled:opacity-50 flex items-center gap-2"
+                  >
+                    {isUploading ? 'Subiendo...' : 'Subir e Indexar'}
+                  </button>
+                </>
+              )}
+            </form>
+          </div>
+
+          {/* Gestión de Colecciones */}
+          <div className="bg-slate-800/50 p-5 rounded-lg border border-slate-700">
+            <h3 className="font-medium text-slate-300 mb-4 flex items-center gap-2">
+              <Database size={18} /> Administrar Colecciones
+            </h3>
+            
+            <form onSubmit={handleCreateCollection} className="flex gap-2 mb-4">
+              <input 
+                type="text" 
+                placeholder="Nueva colección..." 
+                value={newCollectionName}
+                onChange={(e) => setNewCollectionName(e.target.value)}
+                className="flex-1 bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 focus:outline-none focus:border-teal-500"
+              />
+              <button 
+                type="submit"
+                className="bg-slate-700 hover:bg-slate-600 px-3 py-2 rounded-lg transition-colors text-white"
+              >
+                <Plus size={18} />
+              </button>
+            </form>
+
+            <div className="space-y-2 max-h-40 overflow-y-auto pr-2">
+              {collections.map(c => (
+                <div key={c} className="flex items-center justify-between bg-slate-900/50 p-3 rounded-lg border border-slate-800/50">
+                  <span className="text-sm font-medium text-slate-300">{c}</span>
+                  <button 
+                    onClick={() => handleDeleteCollection(c)}
+                    className="text-red-400 hover:bg-red-500/10 p-1.5 rounded-md transition-colors"
+                  >
+                    <Trash size={16} />
+                  </button>
+                </div>
+              ))}
+              {collections.length === 0 && (
+                <p className="text-sm text-slate-500 text-center py-2">No hay colecciones creadas.</p>
+              )}
+            </div>
+          </div>
+        </div>
       </div>
     </div>
   )

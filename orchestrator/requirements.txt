@@ -13,3 +13,6 @@ scipy>=1.10.0
 nvidia-cublas-cu12
 nvidia-cudnn-cu12
 piper-tts
+chromadb>=0.4.0
+pypdf>=3.0.0
+python-multipart>=0.0.9
