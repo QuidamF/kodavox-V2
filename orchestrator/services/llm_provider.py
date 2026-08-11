@@ -123,7 +123,7 @@ class OpenAIProvider(BaseLLMProvider):
 
 
 class GeminiProvider(BaseLLMProvider):
-    """Adaptador para Google Gemini API (streamGenerateContent REST)."""
+    """Adaptador para Google Gemini API usando google-genai."""
 
     def __init__(self):
         model = os.getenv("GEMINI_MODEL", "gemini-1.5-flash")
@@ -138,48 +138,27 @@ class GeminiProvider(BaseLLMProvider):
             yield "Error: GEMINI_API_KEY no está configurada en las variables de entorno."
             return
 
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{self.model_name}:streamGenerateContent?key={self.api_key}&alt=sse"
-        headers = {"Content-Type": "application/json"}
-        
-        payload = {
-            "systemInstruction": {
-                "parts": [{"text": system_prompt}]
-            },
-            "contents": [
-                {
-                    "role": "user",
-                    "parts": [{"text": prompt}]
-                }
-            ]
-        }
-
         try:
-            async with httpx.AsyncClient() as client:
-                async with client.stream("POST", url, headers=headers, json=payload, timeout=60.0) as response:
-                    if response.status_code != 200:
-                        error_body = await response.aread()
-                        print(f"[LLM Error - Gemini] HTTP {response.status_code}: {error_body.decode('utf-8')}")
-                        yield f"Error Gemini ({response.status_code}). Verifica tu API key."
-                        return
+            from google import genai
+            from google.genai import types
+            
+            client = genai.Client(api_key=self.api_key)
+            
+            response_stream = await client.aio.models.generate_content_stream(
+                model=self.model_name,
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    system_instruction=system_prompt,
+                )
+            )
+            
+            async for chunk in response_stream:
+                if chunk.text:
+                    yield chunk.text
 
-                    async for line in response.aiter_lines():
-                        line = line.strip()
-                        if not line or not line.startswith("data:"):
-                            continue
-
-                        data_str = line[5:].strip()
-                        try:
-                            data = json.loads(data_str)
-                            candidates = data.get("candidates", [])
-                            if candidates:
-                                content = candidates[0].get("content", {})
-                                parts = content.get("parts", [])
-                                for part in parts:
-                                    token = part.get("text", "")
-                                    if token:
-                                        yield token
-                        except json.JSONDecodeError:
-                            continue
+        except ImportError:
+            print("[LLM Error - Gemini] Falta la librería 'google-genai'.")
+            yield "Error: Instala google-genai ('pip install google-genai')."
         except Exception as error:
             print(f"[LLM Error - Gemini] {error}")
             yield f"Error al comunicarse con Gemini: {error}"
