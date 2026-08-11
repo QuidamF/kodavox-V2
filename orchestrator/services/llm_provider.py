@@ -3,6 +3,7 @@ import json
 import httpx
 from abc import ABC, abstractmethod
 from typing import AsyncGenerator
+from .usage_tracker import tracker
 
 DEFAULT_SYSTEM_PROMPT = "Eres un asistente de voz llamado KodaVox. Responde en español latino de forma breve y natural."
 
@@ -96,6 +97,7 @@ class OpenAIProvider(BaseLLMProvider):
             "model": self.model_name,
             "messages": messages,
             "stream": True,
+            "stream_options": {"include_usage": True}
         }
 
         try:
@@ -118,6 +120,15 @@ class OpenAIProvider(BaseLLMProvider):
 
                         try:
                             data = json.loads(data_str)
+                            
+                            # Interceptar uso de tokens si está en el último chunk
+                            if "usage" in data and data["usage"]:
+                                usage = data["usage"]
+                                prompt_tokens = usage.get("prompt_tokens", 0)
+                                comp_tokens = usage.get("completion_tokens", 0)
+                                if prompt_tokens > 0 or comp_tokens > 0:
+                                    tracker.add_openai_tokens(prompt_tokens, comp_tokens)
+
                             choices = data.get("choices", [])
                             if choices:
                                 delta = choices[0].get("delta", {})
@@ -168,9 +179,17 @@ class GeminiProvider(BaseLLMProvider):
                 )
             )
             
+            gemini_tokens_estimated = 0
             async for chunk in response_stream:
                 if chunk.text:
+                    gemini_tokens_estimated += len(chunk.text) // 4
                     yield chunk.text
+            
+            # Sumar tokens del prompt también (estimado simple de caracteres // 4)
+            prompt_chars = len(system_prompt) + len(prompt) + sum([len(m["content"]) for m in history])
+            gemini_tokens_estimated += prompt_chars // 4
+            if gemini_tokens_estimated > 0:
+                tracker.add_gemini_tokens(gemini_tokens_estimated)
 
         except ImportError:
             print("[LLM Error - Gemini] Falta la librería 'google-genai'.")

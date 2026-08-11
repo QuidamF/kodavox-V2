@@ -18,6 +18,8 @@ from contextlib import asynccontextmanager
 from services.piper_tts import PiperTTSService
 from services.llm_provider import LLMFactory, DEFAULT_SYSTEM_PROMPT
 from services.elevenlabs_tts import ElevenLabsTTSService
+from services.usage_tracker import tracker
+import httpx
 from services.rag_chroma import ChromaRAGService
 
 # --- Configuración Base ---
@@ -106,6 +108,9 @@ class MonolithicEngine:
         # RAG Local Inicialización
         self.rag_service = ChromaRAGService()
         self.active_rag_collection = ""
+        
+        self.engine_state = "idle" # idle, listening, processing, speaking
+        
         self._load_engine_state()
         if self.active_rag_collection:
             print(f"[Engine] RAG Activado con colección: {self.active_rag_collection}")
@@ -127,6 +132,7 @@ class MonolithicEngine:
                     self.active_voice_id = state.get("active_voice_id", default_voice_id)
                     self.wake_word = state.get("wake_word", os.getenv("WAKE_WORD", "KodaVox"))
                     self.wake_session_timeout = state.get("wake_session_timeout", int(float(os.getenv("WAKE_SESSION_TIMEOUT_SECONDS", "10"))))
+                    self.native_audio_output = state.get("native_audio_output", True)
             else:
                 self.active_rag_collection = os.getenv("RAG_ACTIVE_COLLECTION", "")
                 self.personality_prompt = DEFAULT_SYSTEM_PROMPT
@@ -135,6 +141,7 @@ class MonolithicEngine:
                 self.active_voice_id = default_voice_id
                 self.wake_word = os.getenv("WAKE_WORD", "KodaVox")
                 self.wake_session_timeout = int(float(os.getenv("WAKE_SESSION_TIMEOUT_SECONDS", "10")))
+                self.native_audio_output = True
         except Exception as e:
             print(f"[Engine] Error cargando estado: {e}")
             self.active_rag_collection = os.getenv("RAG_ACTIVE_COLLECTION", "")
@@ -144,6 +151,7 @@ class MonolithicEngine:
             self.active_voice_id = default_voice_id
             self.wake_word = os.getenv("WAKE_WORD", "KodaVox")
             self.wake_session_timeout = int(float(os.getenv("WAKE_SESSION_TIMEOUT_SECONDS", "10")))
+            self.native_audio_output = True
 
     def _save_engine_state(self):
         state_path = os.path.join(os.path.dirname(__file__), "data", "engine_state.json")
@@ -156,7 +164,8 @@ class MonolithicEngine:
                     "elevenlabs_voices": self.elevenlabs_voices,
                     "active_voice_id": self.active_voice_id,
                     "wake_word": self.wake_word,
-                    "wake_session_timeout": self.wake_session_timeout
+                    "wake_session_timeout": self.wake_session_timeout,
+                    "native_audio_output": self.native_audio_output
                 }, f, indent=4)
         except Exception as e:
             print(f"[Engine] Error guardando estado: {e}")
@@ -218,6 +227,13 @@ class MonolithicEngine:
     async def emit_telemetry(self, event: str, data: dict):
         await sio.emit(event, data)
 
+    async def _set_engine_state(self, new_state: str):
+        self.engine_state = new_state
+        await self.emit_telemetry('telemetry_state', {
+            "state": self.engine_state,
+            "session_active": self.wake_session_active
+        })
+
     def audio_callback(self, in_data, frame_count, time_info, status):
         if self.is_speaking or self.is_processing:
             if self.loop:
@@ -249,6 +265,9 @@ class MonolithicEngine:
                     self.speech_samples = 0
                     self.loop.call_soon_threadsafe(
                         lambda: asyncio.create_task(self.emit_telemetry('telemetry_vad', {"is_speaking": True}))
+                    )
+                    self.loop.call_soon_threadsafe(
+                        lambda: asyncio.create_task(self._set_engine_state("listening"))
                     )
                 self.audio_buffer.extend(audio_float32)
                 self.speech_samples += len(audio_float32)
@@ -287,6 +306,7 @@ class MonolithicEngine:
 
     async def process_speech(self, audio_data: np.ndarray):
         self.is_processing = True
+        await self._set_engine_state("processing")
         try:
             print("[Engine] Transcribiendo (GPU ultra-fast)...")
             padding = np.zeros(int(SAMPLE_RATE * 0.2), dtype=np.float32)
@@ -474,9 +494,8 @@ class MonolithicEngine:
                         format=pyaudio.paInt16,
                         channels=1,
                         rate=24000,
-                        output=True,
                         frames_per_buffer=1024
-                    )
+                    ) if self.native_audio_output else None
                     # Acumular bytes para evitar microcortes y subdesbordamiento de buffer (underflow)
                     audio_buffer = b""
                     min_chunk_size = 4096  # ~85ms de audio a 24kHz 16-bit mono
@@ -486,14 +505,21 @@ class MonolithicEngine:
                         while len(audio_buffer) >= min_chunk_size:
                             to_write = audio_buffer[:min_chunk_size]
                             audio_buffer = audio_buffer[min_chunk_size:]
-                            await asyncio.to_thread(stream.write, to_write)
+                            import base64
+                            await self.emit_telemetry('telemetry_audio_stream', {"audio": base64.b64encode(to_write).decode('utf-8')})
+                            if stream:
+                                await asyncio.to_thread(stream.write, to_write)
                             
                     # Escribir el remanente en el buffer
                     if audio_buffer:
-                        await asyncio.to_thread(stream.write, audio_buffer)
+                        import base64
+                        await self.emit_telemetry('telemetry_audio_stream', {"audio": base64.b64encode(audio_buffer).decode('utf-8')})
+                        if stream:
+                            await asyncio.to_thread(stream.write, audio_buffer)
 
-                    stream.stop_stream()
-                    stream.close()
+                    if stream:
+                        stream.stop_stream()
+                        stream.close()
         except Exception as e:
             print(f"[TTS Error] {e}")
             
@@ -518,12 +544,21 @@ class MonolithicEngine:
                 rate=sample_rate,
                 output=True,
                 frames_per_buffer=1024,
-            )
+            ) if self.native_audio_output else None
             try:
-                await asyncio.to_thread(stream.write, audio)
+                import base64
+                
+                # Split in smaller chunks for socketio streaming if needed, or send all
+                chunk_size = 4096
+                for i in range(0, len(audio), chunk_size):
+                    chunk = audio[i:i+chunk_size]
+                    await self.emit_telemetry('telemetry_audio_stream', {"audio": base64.b64encode(chunk).decode('utf-8')})
+                    if stream:
+                        await asyncio.to_thread(stream.write, chunk)
             finally:
-                stream.stop_stream()
-                stream.close()
+                if stream:
+                    stream.stop_stream()
+                    stream.close()
         except Exception as error:
             print(f"[Piper Error] {error}")
         finally:
@@ -543,14 +578,18 @@ class MonolithicEngine:
                 rate=24000,
                 output=True,
                 frames_per_buffer=1024,
-            )
+            ) if self.native_audio_output else None
             try:
                 async for chunk in self.elevenlabs_tts.stream_audio_pcm(text):
                     if chunk:
-                        await asyncio.to_thread(stream.write, chunk)
+                        import base64
+                        await self.emit_telemetry('telemetry_audio_stream', {"audio": base64.b64encode(chunk).decode('utf-8')})
+                        if stream:
+                            await asyncio.to_thread(stream.write, chunk)
             finally:
-                stream.stop_stream()
-                stream.close()
+                if stream:
+                    stream.stop_stream()
+                    stream.close()
         except Exception as error:
             print(f"[ElevenLabs Error] {error}")
         finally:
@@ -570,14 +609,18 @@ class MonolithicEngine:
                 rate=24000,
                 output=True,
                 frames_per_buffer=1024,
-            )
+            ) if self.native_audio_output else None
             try:
                 async for chunk in self.elevenlabs_tts.stream_input_pcm(text_iterator):
                     if chunk:
-                        await asyncio.to_thread(stream.write, chunk)
+                        import base64
+                        await self.emit_telemetry('telemetry_audio_stream', {"audio": base64.b64encode(chunk).decode('utf-8')})
+                        if stream:
+                            await asyncio.to_thread(stream.write, chunk)
             finally:
-                stream.stop_stream()
-                stream.close()
+                if stream:
+                    stream.stop_stream()
+                    stream.close()
         except Exception as error:
             print(f"[ElevenLabs Stream Error] {error}")
         finally:
@@ -702,6 +745,100 @@ async def set_wakeword(word: str = Body(None, embed=True), timeout: int = Body(N
         engine.wake_session_timeout = int(timeout)
     engine._save_engine_state()
     return {"message": "Configuración de Wakeword actualizada exitosamente"}
+
+@app.get("/api/config/hardware")
+async def get_hardware():
+    return {
+        "native_audio_output": engine.native_audio_output
+    }
+
+@app.post("/api/config/hardware")
+async def set_hardware(native_audio_output: bool = Body(..., embed=True)):
+    engine.native_audio_output = native_audio_output
+    engine._save_engine_state()
+    return {"message": "Configuración de hardware actualizada exitosamente"}
+
+@app.get("/api/diagnostics/health")
+async def get_health():
+    return {
+        "vad": engine.vad_model is not None,
+        "stt": engine.stt_model is not None,
+        "llm": engine.llm_provider is not None,
+        "rag": engine.rag_service is not None,
+        "microphone_active": engine.stream is not None and engine.stream.is_active(),
+        "is_speaking": engine.is_speaking,
+        "is_processing": engine.is_processing
+    }
+
+@app.get("/api/diagnostics/usage")
+async def get_usage():
+    return tracker.get_all_stats()
+
+@app.get("/api/diagnostics/providers")
+async def get_providers_status():
+    status = {
+        "elevenlabs": {"status": "unknown", "details": None},
+        "openai": {"status": "unknown"},
+        "gemini": {"status": "unknown"}
+    }
+    
+    # ElevenLabs Subscription
+    el_key = os.getenv("ELEVENLABS_API_KEY")
+    if el_key:
+        try:
+            async with httpx.AsyncClient() as client:
+                res = await client.get(
+                    "https://api.elevenlabs.io/v1/user/subscription",
+                    headers={"xi-api-key": el_key},
+                    timeout=5.0
+                )
+                if res.status_code == 200:
+                    data = res.json()
+                    status["elevenlabs"] = {
+                        "status": "ok",
+                        "character_count": data.get("character_count"),
+                        "character_limit": data.get("character_limit"),
+                        "status_tier": data.get("status")
+                    }
+                else:
+                    status["elevenlabs"] = {"status": "error", "code": res.status_code}
+        except Exception as e:
+            status["elevenlabs"] = {"status": "error", "message": str(e)}
+    else:
+        status["elevenlabs"] = {"status": "missing_key"}
+
+    # OpenAI Ping
+    oa_key = os.getenv("OPENAI_API_KEY")
+    if oa_key:
+        try:
+            async with httpx.AsyncClient() as client:
+                res = await client.get(
+                    "https://api.openai.com/v1/models",
+                    headers={"Authorization": f"Bearer {oa_key}"},
+                    timeout=5.0
+                )
+                status["openai"] = {"status": "ok" if res.status_code == 200 else f"error_{res.status_code}"}
+        except Exception as e:
+            status["openai"] = {"status": "error", "message": str(e)}
+    else:
+        status["openai"] = {"status": "missing_key"}
+
+    # Gemini Ping
+    gem_key = os.getenv("GEMINI_API_KEY")
+    if gem_key:
+        try:
+            async with httpx.AsyncClient() as client:
+                res = await client.get(
+                    f"https://generativelanguage.googleapis.com/v1beta/models?key={gem_key}",
+                    timeout=5.0
+                )
+                status["gemini"] = {"status": "ok" if res.status_code == 200 else f"error_{res.status_code}"}
+        except Exception as e:
+            status["gemini"] = {"status": "error", "message": str(e)}
+    else:
+        status["gemini"] = {"status": "missing_key"}
+        
+    return status
 
 socket_app = socketio.ASGIApp(sio, app)
 

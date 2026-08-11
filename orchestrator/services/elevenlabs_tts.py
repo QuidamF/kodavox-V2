@@ -5,6 +5,7 @@ import base64
 import asyncio
 from typing import AsyncGenerator
 import websockets
+from .usage_tracker import tracker
 
 DEFAULT_VOICE_ID = "21m00Tcm4TlvDq8ikWAM"
 DEFAULT_MODEL_ID = "eleven_multilingual_v2"
@@ -22,6 +23,8 @@ class ElevenLabsTTSService:
         """Envía el texto a ElevenLabs por HTTP y entrega fragmentos de audio PCM de 24kHz (16-bit mono)."""
         if not text:
             return
+            
+        tracker.add_elevenlabs_chars(len(text))
 
         if not self.api_key:
             print("[ElevenLabs Error] ELEVENLABS_API_KEY no configurada.")
@@ -79,12 +82,16 @@ class ElevenLabsTTSService:
 
                 # 2. Tarea para enviar texto (sender)
                 async def sender():
+                    char_count = 0
                     try:
                         async for token in text_iterator:
                             if token:
+                                char_count += len(token)
                                 await websocket.send(json.dumps({"text": token}))
                         # Enviar EOS
                         await websocket.send(json.dumps({"text": ""}))
+                        if char_count > 0:
+                            tracker.add_elevenlabs_chars(char_count)
                     except Exception as e:
                         print(f"[ElevenLabs Sender Error] {e}")
 
