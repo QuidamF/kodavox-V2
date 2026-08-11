@@ -2,11 +2,14 @@
 
 Bienvenido a **KodaVox V2**. Esta versión ha sido rediseñada desde cero para priorizar la **latencia mínima absoluta**, pasando de una arquitectura de microservicios distribuida a un **Motor Monolítico en Memoria** enfocado en una experiencia de "Habla Activa" (Active Speech) fluida.
 
-## 🚀 Cambios Principales (V2)
+## 🚀 Nuevas Funciones y Arquitectura (V2.1)
 - **Latencia Zero-Internal**: VAD y STT ahora corren en el mismo proceso de Python, eliminando saltos de red.
 - **Barge-in Nativo**: El sistema detecta interrupciones de forma instantánea mediante Silero VAD local.
-- **Desacoplamiento**: Se eliminaron dependencias de WakeWord y RAG para maximizar la velocidad de respuesta.
-- **Dashboard de Diagnóstico**: Nueva interfaz en React/Vite para monitorear telemetría en tiempo real.
+- **RAG y WakeWord nativos**: Se reintegraron en el core monolítico con soporte dinámico.
+- **Motor Headless (Socket.IO)**: Telemetría en tiempo real y transmisión de audio crudo por WebSocket.
+- **Sincronización con Robot Face**: Integración nativa (vía WS 8760) para controlar animaciones faciales y lip-sync (loopback).
+- **Control de Costos**: Módulo integrado para rastrear el consumo de tokens y caracteres en proveedores como OpenAI, Gemini y ElevenLabs.
+- **Dashboard de Diagnóstico Extendido**: Nueva interfaz en React/Vite para monitorear telemetría, salud de hardware, costos y estado de la IA en tiempo real.
 
 ---
 
@@ -60,3 +63,18 @@ Desde aquí podrás validar módulo por módulo:
 - Puedes seleccionar `TTS_PROVIDER=xtts`, `TTS_PROVIDER=piper` u `off`. Piper usa por defecto `models/es_MX-claude-high.onnx`, no requiere GPU ni clonación y admite ajustar la velocidad con `PIPER_LENGTH_SCALE`.
 - La precisión de STT se controla con `STT_MODEL` (`small` o `medium`), `STT_INITIAL_PROMPT`, `STT_VAD_FILTER` y `STT_CONDITION_ON_PREVIOUS_TEXT`. `medium` requiere más VRAM y suele aportar mejor precisión en español.
 - `INTERACTION_MODE=active` responde a cada intervención detectada por VAD. `INTERACTION_MODE=wakeword` exige que la transcripción contenga `WAKE_WORD` (por defecto `KodaVox`); puedes decir “KodaVox, ¿qué hora es?” o decir primero “KodaVox” y hacer la consulta en el siguiente turno. Tras responder, la sesión permanece abierta durante `WAKE_SESSION_TIMEOUT_SECONDS` (10 por defecto); después vuelve a requerir la frase de activación. `VAD_THRESHOLD`, `VAD_END_SILENCE_SECONDS` y `STT_MIN_SPEECH_SECONDS` controlan la sensibilidad.
+
+---
+
+## 🤖 Integración con Robot Face (Avatar)
+KodaVox V2 incluye soporte nativo para el proyecto **Robot Face (OctopID)**. KodaVox actúa como el "cerebro" y controla directamente las expresiones y el lip-sync de la cara.
+
+Para usarlo:
+1. Inicia tu backend original de Robot Face (`audioServer.py` y `app_fastapi.py`).
+2. Abre tu interfaz `face.html`.
+3. En el Dashboard V2 de KodaVox, ve a la pestaña **Diagnósticos**.
+4. Activa la opción **Sincronización de Estados (Robot Face)**.
+*La sincronización labial (Lip-Sync) funcionará de forma automática ya que tu `audioServer.py` escucha la salida nativa de KodaVox mediante loopback de sistema.*
+
+## 💰 Sistema de Costos
+El motor guarda diariamente los consumos en `orchestrator/data/usage_stats.json`. En la pestaña de **Proveedores** del Dashboard puedes configurar cuánto pagas por Millón de tokens/caracteres, y KodaVox calculará tu gasto del día en tiempo real.
