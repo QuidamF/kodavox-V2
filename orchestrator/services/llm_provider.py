@@ -16,7 +16,7 @@ class BaseLLMProvider(ABC):
 
     @abstractmethod
     async def generate_stream(
-        self, prompt: str, system_prompt: str = DEFAULT_SYSTEM_PROMPT
+        self, prompt: str, system_prompt: str = DEFAULT_SYSTEM_PROMPT, history: list = None
     ) -> AsyncGenerator[str, None]:
         """Genera una respuesta en streaming token a token."""
         yield ""
@@ -32,9 +32,14 @@ class OllamaProvider(BaseLLMProvider):
         self.url = f"{host}/api/generate"
 
     async def generate_stream(
-        self, prompt: str, system_prompt: str = DEFAULT_SYSTEM_PROMPT
+        self, prompt: str, system_prompt: str = DEFAULT_SYSTEM_PROMPT, history: list = None
     ) -> AsyncGenerator[str, None]:
-        full_prompt = f"{system_prompt}\n\nUsuario: {prompt}"
+        history = history or []
+        history_text = "\n".join([f"{msg['role'].capitalize()}: {msg['content']}" for msg in history])
+        if history_text:
+            full_prompt = f"{system_prompt}\n\nHistorial:\n{history_text}\n\nUsuario: {prompt}"
+        else:
+            full_prompt = f"{system_prompt}\n\nUsuario: {prompt}"
         payload = {
             "model": self.model_name,
             "prompt": full_prompt,
@@ -69,7 +74,7 @@ class OpenAIProvider(BaseLLMProvider):
         self.url = "https://api.openai.com/v1/chat/completions"
 
     async def generate_stream(
-        self, prompt: str, system_prompt: str = DEFAULT_SYSTEM_PROMPT
+        self, prompt: str, system_prompt: str = DEFAULT_SYSTEM_PROMPT, history: list = None
     ) -> AsyncGenerator[str, None]:
         if not self.api_key:
             print("[LLM Error - OpenAI] OPENAI_API_KEY no configurada.")
@@ -80,12 +85,16 @@ class OpenAIProvider(BaseLLMProvider):
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
         }
+        
+        history = history or []
+        messages = [{"role": "system", "content": system_prompt}]
+        for msg in history:
+            messages.append({"role": msg["role"], "content": msg["content"]})
+        messages.append({"role": "user", "content": prompt})
+
         payload = {
             "model": self.model_name,
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": prompt},
-            ],
+            "messages": messages,
             "stream": True,
         }
 
@@ -131,7 +140,7 @@ class GeminiProvider(BaseLLMProvider):
         self.api_key = os.getenv("GEMINI_API_KEY", "")
 
     async def generate_stream(
-        self, prompt: str, system_prompt: str = DEFAULT_SYSTEM_PROMPT
+        self, prompt: str, system_prompt: str = DEFAULT_SYSTEM_PROMPT, history: list = None
     ) -> AsyncGenerator[str, None]:
         if not self.api_key:
             print("[LLM Error - Gemini] GEMINI_API_KEY no configurada.")
@@ -144,9 +153,16 @@ class GeminiProvider(BaseLLMProvider):
             
             client = genai.Client(api_key=self.api_key)
             
+            history = history or []
+            contents = []
+            for msg in history:
+                role = "model" if msg["role"] == "assistant" else "user"
+                contents.append(types.Content(role=role, parts=[types.Part.from_text(text=msg["content"])]))
+            contents.append(types.Content(role="user", parts=[types.Part.from_text(text=prompt)]))
+            
             response_stream = await client.aio.models.generate_content_stream(
                 model=self.model_name,
-                contents=prompt,
+                contents=contents,
                 config=types.GenerateContentConfig(
                     system_instruction=system_prompt,
                 )

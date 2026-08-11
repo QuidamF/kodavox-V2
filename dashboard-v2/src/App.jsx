@@ -29,6 +29,7 @@ function App() {
   const [newVoiceName, setNewVoiceName] = useState("");
   const [newVoiceId, setNewVoiceId] = useState("");
   const [wakeWord, setWakeWord] = useState("");
+  const [wakeTimeout, setWakeTimeout] = useState(10);
 
   const fetchConfig = async () => {
     try {
@@ -47,6 +48,7 @@ function App() {
       if (resW.ok) {
         const data = await resW.json();
         setWakeWord(data.wake_word);
+        setWakeTimeout(data.wake_session_timeout);
       }
     } catch (e) {
       console.error("Error fetching config:", e);
@@ -142,9 +144,9 @@ function App() {
       await fetch(`${API_URL}/config/wakeword`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ word: wakeWord })
+        body: JSON.stringify({ word: wakeWord, timeout: wakeTimeout })
       });
-      alert("Wakeword guardado exitosamente");
+      alert("Configuración de Wakeword guardada exitosamente");
     } catch (e) {
       console.error(e);
     }
@@ -446,20 +448,34 @@ function App() {
             <h2 className="text-xl font-semibold flex-1">Personalidad (System Prompt)</h2>
           </div>
           
-          <form onSubmit={handleSaveWakeWord} className="mb-4 flex gap-2">
-            <div className="flex-1 bg-slate-900 border border-slate-700 rounded-lg flex items-center px-3">
-              <span className="text-slate-400 text-sm mr-2 font-medium">Wakeword:</span>
-              <input 
-                type="text" 
-                value={wakeWord}
-                onChange={(e) => setWakeWord(e.target.value)}
-                className="bg-transparent border-none outline-none text-slate-200 text-sm py-2 w-full"
-                placeholder="ej: kodavox"
-              />
+          <form onSubmit={handleSaveWakeWord} className="mb-4 flex flex-col gap-3">
+            <div className="flex gap-2">
+              <div className="flex-1 bg-slate-900 border border-slate-700 rounded-lg flex items-center px-3">
+                <span className="text-slate-400 text-sm mr-2 font-medium">Wakeword:</span>
+                <input 
+                  type="text" 
+                  value={wakeWord}
+                  onChange={(e) => setWakeWord(e.target.value)}
+                  className="bg-transparent border-none outline-none text-slate-200 text-sm py-2 w-full"
+                  placeholder="ej: kodavox"
+                />
+              </div>
+              <div className="bg-slate-900 border border-slate-700 rounded-lg flex items-center px-3 w-32">
+                <span className="text-slate-400 text-sm mr-2 font-medium">Timer:</span>
+                <input 
+                  type="number" 
+                  value={wakeTimeout}
+                  onChange={(e) => setWakeTimeout(e.target.value)}
+                  className="bg-transparent border-none outline-none text-slate-200 text-sm py-2 w-full"
+                  placeholder="10"
+                  min="1"
+                  max="60"
+                />
+              </div>
+              <button type="submit" className="bg-slate-700 hover:bg-slate-600 text-white px-3 py-2 rounded-lg text-sm font-medium transition-colors">
+                Actualizar
+              </button>
             </div>
-            <button type="submit" className="bg-slate-700 hover:bg-slate-600 text-white px-3 py-2 rounded-lg text-sm font-medium transition-colors">
-              Actualizar
-            </button>
           </form>
 
           <form onSubmit={handleSavePersonality} className="flex flex-col flex-1">

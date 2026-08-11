@@ -89,6 +89,7 @@ class MonolithicEngine:
         self.silence_samples = 0
         self.speech_samples = 0
         self.is_processing = False
+        self.conversation_history = []
         self.awaiting_user_query = False
         self.wake_session_active = False
         self.wake_session_token = 0
@@ -125,6 +126,7 @@ class MonolithicEngine:
                     self.elevenlabs_voices = state.get("elevenlabs_voices", [{"name": "Default (Env)", "id": default_voice_id}])
                     self.active_voice_id = state.get("active_voice_id", default_voice_id)
                     self.wake_word = state.get("wake_word", os.getenv("WAKE_WORD", "KodaVox"))
+                    self.wake_session_timeout = state.get("wake_session_timeout", int(float(os.getenv("WAKE_SESSION_TIMEOUT_SECONDS", "10"))))
             else:
                 self.active_rag_collection = os.getenv("RAG_ACTIVE_COLLECTION", "")
                 self.personality_prompt = DEFAULT_SYSTEM_PROMPT
@@ -132,6 +134,7 @@ class MonolithicEngine:
                 self.elevenlabs_voices = [{"name": "Default (Env)", "id": default_voice_id}]
                 self.active_voice_id = default_voice_id
                 self.wake_word = os.getenv("WAKE_WORD", "KodaVox")
+                self.wake_session_timeout = int(float(os.getenv("WAKE_SESSION_TIMEOUT_SECONDS", "10")))
         except Exception as e:
             print(f"[Engine] Error cargando estado: {e}")
             self.active_rag_collection = os.getenv("RAG_ACTIVE_COLLECTION", "")
@@ -140,6 +143,7 @@ class MonolithicEngine:
             self.elevenlabs_voices = [{"name": "Default (Env)", "id": default_voice_id}]
             self.active_voice_id = default_voice_id
             self.wake_word = os.getenv("WAKE_WORD", "KodaVox")
+            self.wake_session_timeout = int(float(os.getenv("WAKE_SESSION_TIMEOUT_SECONDS", "10")))
 
     def _save_engine_state(self):
         state_path = os.path.join(os.path.dirname(__file__), "data", "engine_state.json")
@@ -151,7 +155,8 @@ class MonolithicEngine:
                     "personality_prompt": self.personality_prompt,
                     "elevenlabs_voices": self.elevenlabs_voices,
                     "active_voice_id": self.active_voice_id,
-                    "wake_word": self.wake_word
+                    "wake_word": self.wake_word,
+                    "wake_session_timeout": self.wake_session_timeout
                 }, f, indent=4)
         except Exception as e:
             print(f"[Engine] Error guardando estado: {e}")
@@ -214,7 +219,14 @@ class MonolithicEngine:
         await sio.emit(event, data)
 
     def audio_callback(self, in_data, frame_count, time_info, status):
-        if not self.is_speaking and not self.is_processing and self.loop:
+        if self.is_speaking or self.is_processing:
+            if self.loop:
+                self.loop.call_soon_threadsafe(
+                    lambda: asyncio.create_task(self.emit_telemetry('telemetry_mic', {"energy": 0}))
+                )
+            return (None, pyaudio.paContinue)
+
+        if self.loop:
             audio_array = np.frombuffer(in_data, dtype=np.int16).astype(np.float32)
             energy = int(np.sqrt(np.mean(np.square(audio_array))))
             
@@ -329,9 +341,9 @@ class MonolithicEngine:
         return "".join(char for char in normalized if unicodedata.category(char) != "Mn")
 
     def _contains_wake_word(self, text: str) -> bool:
-        normalized_wake = self._normalize_text(self.wake_word).replace(" ", "")
-        normalized_text = self._normalize_text(text).replace(" ", "")
-        return normalized_wake in normalized_text
+        if self._normalize_text(self.wake_word).replace(" ", "") == "kodavox":
+            return bool(re.search(r"koda\s*vox", text, flags=re.IGNORECASE))
+        return bool(re.search(re.escape(self.wake_word), text, flags=re.IGNORECASE))
 
     def _remove_wake_word(self, text: str) -> str:
         # Whisper puede transcribir “KodaVox” como “Koda Vox”.
@@ -361,7 +373,7 @@ class MonolithicEngine:
 
     async def _expire_wake_session(self, token: int) -> None:
         try:
-            await asyncio.sleep(WAKE_SESSION_TIMEOUT_SECONDS)
+            await asyncio.sleep(self.wake_session_timeout)
         except asyncio.CancelledError:
             return
 
@@ -371,6 +383,7 @@ class MonolithicEngine:
         self.wake_session_active = False
         self.awaiting_user_query = False
         self.wake_session_timeout_task = None
+        self.conversation_history.clear()
         print(f"[Engine] Sesión expirada; vuelve a decir {self.wake_word} para continuar.")
 
     async def ask_llm(self, text: str):
@@ -387,14 +400,18 @@ class MonolithicEngine:
             except Exception as e:
                 print(f"[Engine RAG Error] {e}")
 
+        self.conversation_history.append({"role": "user", "content": prompt})
+        full_response_buffer = []
+
         print(f"[Engine] Pensando con {self.llm_provider.provider_name} ({self.llm_provider.model_name})...")
         
         if TTS_PROVIDER == "elevenlabs":
             async def token_generator():
                 try:
-                    async for token in self.llm_provider.generate_stream(prompt, system_prompt=self.personality_prompt):
+                    async for token in self.llm_provider.generate_stream(prompt, system_prompt=self.personality_prompt, history=self.conversation_history[:-1]):
                         if token:
                             await self.emit_telemetry('telemetry_llm', {"token": token, "provider": self.llm_provider.provider_name})
+                            full_response_buffer.append(token)
                             yield token
                 except Exception as error:
                     print(f"[Engine LLM Error] {error}")
@@ -403,10 +420,11 @@ class MonolithicEngine:
         else:
             sentence_buffer = ""
             try:
-                async for token in self.llm_provider.generate_stream(prompt, system_prompt=self.personality_prompt):
+                async for token in self.llm_provider.generate_stream(prompt, system_prompt=self.personality_prompt, history=self.conversation_history[:-1]):
                     if token:
                         await self.emit_telemetry('telemetry_llm', {"token": token, "provider": self.llm_provider.provider_name})
                         sentence_buffer += token
+                        full_response_buffer.append(token)
                         if any(char in token for char in ['.', '!', '?', '\n']):
                             await self.play_tts(sentence_buffer.strip())
                             sentence_buffer = ""
@@ -416,7 +434,14 @@ class MonolithicEngine:
             if sentence_buffer.strip():
                 await self.play_tts(sentence_buffer.strip())
 
+        self.conversation_history.append({"role": "assistant", "content": "".join(full_response_buffer)})
+
+        # Esperamos medio segundo extra antes de "encender" el micrófono
+        # para que cualquier eco en la habitación termine de disiparse.
+        await asyncio.sleep(0.5)
         self.is_speaking = False
+        
+        # Reiniciar el contador de 10 segundos justo ahora que terminó de hablar.
         if self.wake_session_active:
             self._schedule_wake_session_timeout()
 
@@ -664,13 +689,19 @@ async def set_active_voice(voice_id: str = Body(..., embed=True)):
 
 @app.get("/api/config/wakeword")
 async def get_wakeword():
-    return {"wake_word": engine.wake_word}
+    return {
+        "wake_word": engine.wake_word,
+        "wake_session_timeout": engine.wake_session_timeout
+    }
 
 @app.post("/api/config/wakeword")
-async def set_wakeword(word: str = Body(..., embed=True)):
-    engine.wake_word = word
+async def set_wakeword(word: str = Body(None, embed=True), timeout: int = Body(None, embed=True)):
+    if word is not None:
+        engine.wake_word = word
+    if timeout is not None:
+        engine.wake_session_timeout = int(timeout)
     engine._save_engine_state()
-    return {"message": "Wakeword actualizado exitosamente"}
+    return {"message": "Configuración de Wakeword actualizada exitosamente"}
 
 socket_app = socketio.ASGIApp(sio, app)
 
