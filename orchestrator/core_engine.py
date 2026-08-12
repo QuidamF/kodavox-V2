@@ -11,7 +11,11 @@ import sys
 import re
 import unicodedata
 import websockets
+import shutil
+import zipfile
+import tempfile
 from fastapi import FastAPI, UploadFile, File, Form, Body, HTTPException
+from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from faster_whisper import WhisperModel
@@ -986,6 +990,109 @@ async def get_providers_status():
         status["gemini"] = {"status": "missing_key"}
         
     return status
+
+@app.post("/api/config/export")
+async def export_config(payload: dict = Body(...)):
+    include_env = payload.get("include_env", False)
+    include_rag = payload.get("include_rag", False)
+    
+    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    state_path = os.path.join(os.path.dirname(__file__), "data", "engine_state.json")
+    env_path = os.path.join(project_root, ".env")
+    chroma_path = os.path.join(os.path.dirname(__file__), "data", "chroma_db")
+    
+    temp_dir = tempfile.mkdtemp()
+    zip_path = os.path.join(temp_dir, "kodavox_full_profile.zip")
+    
+    with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
+        manifest = {
+            "has_state": True,
+            "has_env": include_env,
+            "has_rag": include_rag,
+            "version": "2.0"
+        }
+        zipf.writestr("manifest.json", json.dumps(manifest))
+        
+        if os.path.exists(state_path):
+            zipf.write(state_path, "engine_state.json")
+            
+        if include_env and os.path.exists(env_path):
+            zipf.write(env_path, ".env")
+            
+        if include_rag and os.path.exists(chroma_path):
+            for root, _, files in os.walk(chroma_path):
+                for file in files:
+                    file_path = os.path.join(root, file)
+                    arcname = os.path.join("chroma_db", os.path.relpath(file_path, chroma_path))
+                    zipf.write(file_path, arcname)
+                    
+    return FileResponse(path=zip_path, filename="kodavox_full_profile.zip", media_type="application/zip")
+
+async def restart_server_task():
+    await asyncio.sleep(2)
+    os.execv(sys.executable, ['python'] + sys.argv)
+
+@app.post("/api/config/import")
+async def import_config(file: UploadFile = File(...)):
+    if not file.filename.endswith('.zip'):
+        raise HTTPException(status_code=400, detail="El archivo debe ser un ZIP (.zip)")
+        
+    temp_dir = tempfile.mkdtemp()
+    zip_path = os.path.join(temp_dir, "uploaded.zip")
+    
+    try:
+        with open(zip_path, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+            
+        extract_dir = os.path.join(temp_dir, "extracted")
+        os.makedirs(extract_dir, exist_ok=True)
+        
+        with zipfile.ZipFile(zip_path, 'r') as zipf:
+            zipf.extractall(extract_dir)
+            
+        manifest_path = os.path.join(extract_dir, "manifest.json")
+        if not os.path.exists(manifest_path):
+            raise HTTPException(status_code=400, detail="El archivo no es un perfil de KodaVox válido (falta manifest.json)")
+            
+        with open(manifest_path, 'r') as f:
+            manifest = json.load(f)
+            
+        project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        needs_restart = False
+        
+        if manifest.get("has_state"):
+            state_src = os.path.join(extract_dir, "engine_state.json")
+            state_dest = os.path.join(os.path.dirname(__file__), "data", "engine_state.json")
+            if os.path.exists(state_src):
+                shutil.copy2(state_src, state_dest)
+                engine._load_engine_state()
+                if TTS_PROVIDER == "elevenlabs" and getattr(engine, 'active_voice_id', None):
+                    engine.elevenlabs_tts = ElevenLabsTTSService(voice_id=engine.active_voice_id)
+                    engine._update_elevenlabs_settings()
+                    
+        if manifest.get("has_env"):
+            env_src = os.path.join(extract_dir, ".env")
+            env_dest = os.path.join(project_root, ".env")
+            if os.path.exists(env_src):
+                shutil.copy2(env_src, env_dest)
+                needs_restart = True
+                
+        if manifest.get("has_rag"):
+            chroma_src = os.path.join(extract_dir, "chroma_db")
+            chroma_dest = os.path.join(os.path.dirname(__file__), "data", "chroma_db")
+            if os.path.exists(chroma_src):
+                if os.path.exists(chroma_dest):
+                    shutil.rmtree(chroma_dest)
+                shutil.copytree(chroma_src, chroma_dest)
+                needs_restart = True
+                
+        if needs_restart:
+            asyncio.create_task(restart_server_task())
+            
+        return {"message": "Perfil importado exitosamente", "needs_restart": needs_restart}
+    except Exception as e:
+        print(f"[Import Error] {e}")
+        raise HTTPException(status_code=500, detail=f"Error al importar configuración: {e}")
 
 socket_app = socketio.ASGIApp(sio, app)
 

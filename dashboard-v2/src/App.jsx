@@ -3,7 +3,7 @@ import { io } from 'socket.io-client'
 import { 
   Mic, MicOff, MessageSquare, Cpu, Volume2, 
   Database, Upload, Trash, Plus, User, 
-  Settings, Activity, Key, CheckSquare, CreditCard, UploadCloud 
+  Settings, Activity, Key, CheckSquare, CreditCard, UploadCloud, DownloadCloud, AlertTriangle, Loader2
 } from 'lucide-react'
 
 // Nos conectaremos al motor monolítico
@@ -49,6 +49,12 @@ function App() {
   const [voiceSimilarity, setVoiceSimilarity] = useState(0.75);
   const [voiceStyle, setVoiceStyle] = useState(0.0);
   const [voiceSpeakerBoost, setVoiceSpeakerBoost] = useState(true);
+
+  // Export/Import States
+  const [exportIncludeEnv, setExportIncludeEnv] = useState(false);
+  const [exportIncludeRag, setExportIncludeRag] = useState(false);
+  const [isImporting, setIsImporting] = useState(false);
+  const [isRestarting, setIsRestarting] = useState(false);
 
   // Diagnostics States
   const [healthStatus, setHealthStatus] = useState(null);
@@ -359,6 +365,88 @@ function App() {
     } finally {
       setIsCloning(false);
     }
+  };
+
+  const handleExportProfile = async () => {
+    try {
+      const res = await fetch(`${API_URL}/config/export`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          include_env: exportIncludeEnv,
+          include_rag: exportIncludeRag
+        })
+      });
+      
+      if (!res.ok) throw new Error('Error al exportar');
+      
+      const blob = await res.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'kodavox_full_profile.zip';
+      document.body.appendChild(a);
+      a.click();
+      window.URL.revokeObjectURL(url);
+      a.remove();
+    } catch (e) {
+      console.error(e);
+      alert('Error al exportar perfil.');
+    }
+  };
+
+  const handleImportProfile = async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+
+    if (!confirm("Esto sobrescribirá tu configuración actual. Si incluye archivo .env, requerirá reiniciar. ¿Continuar?")) {
+      e.target.value = null;
+      return;
+    }
+
+    const formData = new FormData();
+    formData.append("file", file);
+    setIsImporting(true);
+
+    try {
+      const res = await fetch(`${API_URL}/config/import`, {
+        method: "POST",
+        body: formData
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        if (data.needs_restart) {
+          setIsRestarting(true);
+          // Empezar a hacer polling a /api/diagnostics/health para saber cuando reviva
+          const pollInterval = setInterval(async () => {
+            try {
+              const ping = await fetch(`${API_URL}/diagnostics/health`, { signal: AbortSignal.timeout(2000) });
+              if (ping.ok) {
+                clearInterval(pollInterval);
+                window.location.reload();
+              }
+            } catch (e) {
+              // Aún no despierta, ignorar
+            }
+          }, 3000);
+        } else {
+          alert("Perfil importado y recargado con éxito.");
+          fetchConfig(); // Refrescar UI con los nuevos estados
+          setIsImporting(false);
+        }
+      } else {
+        const errorData = await res.json();
+        alert(`Error al importar: ${errorData.detail}`);
+        setIsImporting(false);
+      }
+    } catch (error) {
+      console.error(error);
+      alert("Error de conexión al importar perfil.");
+      setIsImporting(false);
+    }
+    
+    e.target.value = null; // Reset input
   };
 
   const handleTestVoice = async (e) => {
@@ -1177,6 +1265,77 @@ function App() {
                     />
                   </div>
                 </div>
+
+                <h3 className="font-semibold text-lg text-slate-200 mb-4 border-b border-slate-800 pb-2">Respaldo y Migración de Sistema</h3>
+                
+                {isRestarting ? (
+                  <div className="bg-slate-950 p-12 rounded-xl border border-indigo-500/50 flex flex-col items-center justify-center mb-8 shadow-[0_0_15px_rgba(99,102,241,0.2)]">
+                    <Loader2 size={48} className="text-indigo-500 animate-spin mb-4" />
+                    <h3 className="text-xl font-bold text-white mb-2">Reiniciando KodaVox...</h3>
+                    <p className="text-slate-400 text-sm text-center max-w-md">Se aplicaron cambios críticos (como el archivo .env) que requieren reiniciar el orquestador. Por favor, espera mientras el sistema se reconecta automáticamente.</p>
+                  </div>
+                ) : (
+                  <div className="bg-slate-950 p-6 rounded-xl border border-slate-800 flex flex-col gap-6 mb-8">
+                    <div className="flex items-start gap-3 bg-amber-500/10 border border-amber-500/20 p-4 rounded-lg">
+                      <AlertTriangle size={20} className="text-amber-500 shrink-0 mt-0.5" />
+                      <div>
+                        <h4 className="text-sm font-semibold text-amber-500 mb-1">¡Advertencia de Seguridad!</h4>
+                        <p className="text-xs text-amber-200/70">
+                          Si seleccionas exportar las <strong>Credenciales (.env)</strong>, el archivo ZIP resultante contendrá tus contraseñas y llaves de API maestras. Nunca compartas este archivo públicamente.
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="flex flex-col md:flex-row gap-8 justify-between">
+                      <div className="flex-1">
+                        <h4 className="font-semibold text-slate-300 mb-3">¿Qué deseas incluir en el paquete ZIP?</h4>
+                        <div className="flex flex-col gap-3">
+                          <label className="flex items-center gap-3 cursor-not-allowed opacity-70">
+                            <input type="checkbox" checked disabled className="w-4 h-4 rounded border-slate-700 bg-slate-800 text-indigo-500" />
+                            <div>
+                              <span className="text-sm text-slate-300 block">Ajustes y Personalidad</span>
+                              <span className="text-[10px] text-slate-500">engine_state.json (Obligatorio)</span>
+                            </div>
+                          </label>
+                          <label className="flex items-center gap-3 cursor-pointer group">
+                            <input type="checkbox" checked={exportIncludeEnv} onChange={e => setExportIncludeEnv(e.target.checked)} className="w-4 h-4 rounded border-slate-700 bg-slate-800 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-slate-900" />
+                            <div>
+                              <span className="text-sm text-slate-300 group-hover:text-white transition-colors block">Credenciales y Puertos</span>
+                              <span className="text-[10px] text-slate-500">archivo .env (Requiere reinicio al importar)</span>
+                            </div>
+                          </label>
+                          <label className="flex items-center gap-3 cursor-pointer group">
+                            <input type="checkbox" checked={exportIncludeRag} onChange={e => setExportIncludeRag(e.target.checked)} className="w-4 h-4 rounded border-slate-700 bg-slate-800 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-slate-900" />
+                            <div>
+                              <span className="text-sm text-slate-300 group-hover:text-white transition-colors block">Base de Conocimiento Vectorial</span>
+                              <span className="text-[10px] text-slate-500">chroma_db/ (Puede aumentar el tamaño del ZIP considerablemente)</span>
+                            </div>
+                          </label>
+                        </div>
+                      </div>
+
+                      <div className="flex flex-col gap-3 justify-center border-t md:border-t-0 md:border-l border-slate-800 pt-4 md:pt-0 md:pl-8">
+                        <button 
+                          onClick={handleExportProfile} 
+                          className="bg-slate-800 hover:bg-slate-700 text-slate-200 px-6 py-3 rounded-xl text-sm font-medium flex items-center justify-center gap-2 transition-colors border border-slate-700 w-full md:w-auto"
+                        >
+                          <DownloadCloud size={18} /> Exportar Paquete (.zip)
+                        </button>
+                        
+                        <div className="relative w-full md:w-auto">
+                          <input type="file" accept=".zip" id="import-profile" className="hidden" onChange={handleImportProfile} disabled={isImporting} />
+                          <label 
+                            htmlFor="import-profile" 
+                            className={`w-full ${isImporting ? 'bg-indigo-500/50 cursor-not-allowed' : 'bg-indigo-600 hover:bg-indigo-500 cursor-pointer'} text-white px-6 py-3 rounded-xl text-sm font-medium flex items-center justify-center gap-2 transition-colors shadow-lg shadow-indigo-500/20`}
+                          >
+                            {isImporting ? <Loader2 size={18} className="animate-spin" /> : <UploadCloud size={18} />}
+                            {isImporting ? "Procesando..." : "Importar Paquete (.zip)"}
+                          </label>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                )}
 
                 <h3 className="font-semibold text-lg text-slate-200 mb-4 border-b border-slate-800 pb-2">Rastreo de Uso Local (Por Día)</h3>
                 <div className="bg-slate-950 rounded-xl border border-slate-800 overflow-hidden">
