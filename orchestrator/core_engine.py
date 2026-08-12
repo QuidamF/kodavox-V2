@@ -882,4 +882,5 @@ async def get_providers_status():
 socket_app = socketio.ASGIApp(sio, app)
 
 if __name__ == "__main__":
-    uvicorn.run(socket_app, host="0.0.0.0", port=5000, log_level="warning")
+    engine_port = int(os.getenv("ENGINE_PORT", "5000"))
+    uvicorn.run(socket_app, host="0.0.0.0", port=engine_port, log_level="warning")

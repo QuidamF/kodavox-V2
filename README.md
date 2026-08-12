@@ -26,33 +26,119 @@ sudo apt-get update && sudo apt-get install -y portaudio19-dev python3-dev build
 
 ---
 
-## ⚡ Inicio Rápido
+## ✅ Validaciones Previas (Checklist)
 
-He creado un script de automatización que levanta todo el entorno (Docker, Venv, Motor y Dashboard) con un solo comando:
+Antes de ejecutar el sistema, asegúrate de validar los siguientes puntos:
+
+1. **Configuración del Entorno (.env):**
+   - Copia el archivo `.env.example` a `.env`: `cp .env.example .env`
+   - Configura los proveedores que vayas a usar. Si usas modelos de pago (OpenAI, Gemini, ElevenLabs), asegúrate de colocar tus **API Keys**.
+2. **Requisitos de Software:**
+   - **Python 3.10+**: Necesario para el motor backend (y el paquete `venv` para entornos virtuales).
+   - **Node.js y npm**: Necesarios para poder instalar y ejecutar el Dashboard V2.
+3. **Modelos Locales (Ollama):** *(Solo requerido si se usa un modelo LLM local)*
+   - Si en tu `.env` tienes configurado `LLM_PROVIDER=ollama`, verifica que el servicio de Ollama esté ejecutándose (`http://127.0.0.1:11434`).
+   - Asegúrate de haber descargado el modelo definido en `OLLAMA_MODEL` ejecutando: `ollama pull qwen2.5:1.5b` (o el modelo que hayas elegido).
+4. **Dependencias de TTS (Docker):**
+   - Si vas a utilizar `TTS_PROVIDER=xtts`, el sistema requiere **Docker** y el plugin **Docker Compose**. *(El script `start_v2.sh` validará su existencia y los instalará automáticamente si no se encuentran en sistemas compatibles con apt).*
+   - *(Opcional)* Si usas Piper localmente (`TTS_PROVIDER=piper`), el script `start_v2.sh` descargará automáticamente los modelos requeridos la primera vez si no existen.
+
+---
+
+## ⚡ Ejecución del Sistema
+
+Puedes iniciar KodaVox V2 de dos formas: en primer plano (ideal para pruebas y desarrollo) o en segundo plano usando PM2 (recomendado para producción).
+
+### Opción A: Ejecución Manual (Primer Plano)
+
+Levanta todo el entorno (Docker, Venv, Motor y Dashboard) con un solo comando. Verás los logs directamente en tu consola.
 
 ```bash
+# Otorga permisos de ejecución si es la primera vez
+chmod +x start_v2.sh
+
+# Ejecuta el script
 ./start_v2.sh
 ```
 
-### ¿Qué hace este script?
-1. Levanta el contenedor de **XTTS (TTS)** en Docker.
+### Opción B: Ejecución en Producción con PM2 (Segundo Plano)
+
+Para mantener KodaVox corriendo de forma ininterrumpida, gestionar sus logs y reiniciarlo si hay fallos, usaremos **PM2**.
+
+1. **Instalar PM2 globalmente** (si no lo tienes):
+   ```bash
+   sudo npm install -g pm2
+   ```
+2. **Iniciar el sistema** utilizando el archivo `ecosystem.json` incluido:
+   ```bash
+   pm2 start ecosystem.json
+   ```
+3. **Comandos útiles de PM2**:
+   - Ver el estado del sistema: `pm2 status`
+   - Ver los logs en tiempo real: `pm2 logs kodavox-v2`
+   - Detener el sistema: `pm2 stop kodavox-v2`
+   - Hacer que el sistema inicie automáticamente al reiniciar el servidor:
+     ```bash
+     pm2 startup
+     pm2 save
+     ```
+
+### ¿Qué hace `start_v2.sh` por debajo?
+1. Valida e instala Docker si es necesario, y levanta el contenedor de **XTTS** (si aplica).
 2. Crea y configura un entorno virtual de Python (`venv`) en la carpeta `orchestrator/`.
-3. Instala los requerimientos (`pyaudio`, `faster-whisper`, `torch`, etc.).
+3. Instala los requerimientos de Python.
 4. Inicia el **Motor Monolítico** (`core_engine.py`) en el puerto 5000.
 5. Inicia el **Dashboard V2** en el puerto 5173.
 
 ---
 
-## 📊 Dashboard de Diagnóstico
-Una vez iniciado, abre tu navegador en:
-👉 **http://localhost:5173**
+## 📊 Interfaz de Usuario y Configuración (Dashboard V2)
 
-Desde aquí podrás validar módulo por módulo:
-- **Mic Level**: Nivel de entrada de audio.
-- **VAD Status**: Detección de voz en tiempo real.
-- **STT**: Transcripción inmediata de Whisper.
-- **LLM**: Flujo de tokens de Ollama.
-- **TTS**: Estado de la síntesis de voz.
+Una vez iniciado el sistema, abre tu navegador en:
+👉 **http://localhost:5173** (o el puerto consecutivo si está ocupado)
+
+El Dashboard consta de un menú lateral que te permite monitorizar el estado en tiempo real y configurar el comportamiento del agente "al vuelo", sin necesidad de reiniciar el servidor. Aquí tienes una guía de uso para cada sección:
+
+### 1. Monitoreo (Home)
+Esta es la pantalla principal para observar qué está "pensando" el motor.
+- **Voice Activity (VAD)**: Muestra una barra de energía en tiempo real. Si el indicador cambia a verde ("Usuario Hablando..."), el sistema te está escuchando.
+- **Transcripción (STT)**: Lee exactamente lo que el modelo Whisper entendió de tu voz. Útil para verificar si la sensibilidad del micrófono o el ruido de fondo están afectando el reconocimiento.
+- **Respuesta LLM**: El flujo de texto palabra por palabra generado por Ollama, OpenAI o Gemini.
+- **Síntesis (TTS)**: Indica si el agente está hablando o en silencio.
+
+### 2. Personalidad
+Define cómo razona y responde KodaVox mediante un **System Prompt**.
+- **Ejemplo de llenado:** `"Eres KodaVox, un asistente técnico muy inteligente pero sarcástico. Siempre respondes en menos de 2 oraciones."`
+- *Nota:* Al presionar "Guardar Personalidad", el nuevo comportamiento se aplicará instantáneamente en tu siguiente interacción verbal.
+
+### 3. Wakeword (Palabra Mágica)
+Si el `INTERACTION_MODE` en tu `.env` está configurado como `wakeword`, aquí defines cómo despertar al asistente.
+- **Palabra de Activación**: El nombre al cual responde. Ejemplo: `Computadora` o `Jarvis`.
+- **Temporizador de Sesión**: Los segundos que permanecerá atento a comandos subsecuentes sin necesidad de repetir su nombre (Ej. `10` segundos).
+
+### 4. Voz (Catálogo ElevenLabs)
+Si usas `TTS_PROVIDER=elevenlabs`, aquí puedes registrar nuevas voces y alternar entre ellas.
+- **Añadir Voz**: Coloca un "Nombre Descriptivo" (Ej. `Drew (Narrador)`) y pega el "ID de ElevenLabs" (una cadena alfanumérica).
+- **Activar**: Usa el menú desplegable superior para cambiar la voz activa al instante.
+
+**Voces Populares de ElevenLabs (Ejemplos que puedes agregar):**
+- **Rachel** (Femenina, Americana, Narración): `21m00Tcm4TlvDq8ikWAM` *(La voz por defecto de KodaVox)*
+- **Drew** (Masculino, Americano, Noticias): `29vD33N1CtxCmqQRPOHJ`
+- **Antoni** (Masculino, Americano, Calmado): `ErXwobaYiN019PkySvjV`
+- **Domi** (Femenina, Americana, Emocional): `AZnzlk1XvdvUeBnXmlld`
+- **Elli** (Femenina, Americana, Infantil/Emocional): `MF3mGyEYCl7XYWbV9V6O`
+- **Fin** (Masculino, Irlandés, Profundo): `D38z5RcWu1voky8WS1ja`
+
+### 5. Base de Conocimientos (RAG)
+Permite inyectar información contextual a largo plazo para que el LLM responda con datos específicos de tu organización.
+- **Paso 1 (Crear Colección)**: En el panel izquierdo, escribe un nombre (ej. `manual_empleados`) y da clic en "Crear".
+- **Paso 2 (Subir Documento)**: En el panel derecho, asegúrate de que la colección de destino esté seleccionada, elige un archivo de tu computadora (soportados: `.txt, .md, .pdf, .json, .csv`) y presiona "Subir e Indexar Documento".
+- **Paso 3 (Activar)**: En la esquina superior derecha, bajo la caja "Cerebro Activo", selecciona la colección que quieres que el agente lea.
+- *Ejemplo de interacción:* Sube un PDF del manual de tu empresa y luego pregúntale a KodaVox por el micrófono: *"¿Cuáles son las políticas de vacaciones según el manual?"*.
+
+### 6. Diagnósticos y Proveedores
+- **Diagnósticos**: Muestra semáforos (OK/Falla) para los módulos internos de hardware (VAD, Whisper, Base de Datos). Aquí también puedes usar los *Toggles* (interruptores) para apagar la salida física de audio, o bien, encender la **Sincronización de Estados con Robot Face**.
+- **Proveedores**: Define tus costos por "Millón de tokens/caracteres" para monitorear cuánto dinero real has consumido en el día usando las APIs en la nube.
 
 ---
 
@@ -78,3 +164,88 @@ Para usarlo:
 
 ## 💰 Sistema de Costos
 El motor guarda diariamente los consumos en `orchestrator/data/usage_stats.json`. En la pestaña de **Proveedores** del Dashboard puedes configurar cuánto pagas por Millón de tokens/caracteres, y KodaVox calculará tu gasto del día en tiempo real.
+
+---
+
+## 🏗️ Arquitectura y Diseño
+
+KodaVox V2 está diseñado alrededor de un **Motor Monolítico en Memoria** para reducir la latencia al mínimo absoluto. Al procesar el audio directamente en memoria y utilizar sockets bidireccionales, el sistema logra respuestas casi instantáneas (zero-internal latency) comparado con soluciones basadas en microservicios y REST APIs.
+
+### Diagrama de Flujo del Sistema
+
+```mermaid
+graph TD
+    subgraph KodaVox Monolithic Engine
+        A["Microphone (PyAudio)"] --> B["Silero VAD (CPU)"]
+        B -- "Speech Detected" --> C["Faster-Whisper STT (GPU)"]
+        C -- "Text Transcript" --> D{"Interaction Mode"}
+        D -- "Active / WakeWord" --> E["RAG ChromaDB"]
+        E -- "Context + Prompt" --> F["LLM Provider"]
+    end
+
+    subgraph LLM Providers
+        F --> F1("Ollama (Local)")
+        F --> F2("OpenAI (Cloud)")
+        F --> F3("Gemini (Cloud)")
+    end
+
+    subgraph TTS Services
+        F -- "Stream Tokens" --> G{"TTS Provider"}
+        G --> H("Piper TTS (Local)")
+        G --> I("ElevenLabs (Cloud)")
+        G --> J("XTTS (Docker)")
+    end
+    
+    subgraph Outputs & Clients
+        H --> K["PyAudio Native Output"]
+        I --> K
+        J --> K
+        K -- "System Loopback" --> L["Robot Face App"]
+        
+        %% WebSockets / Telemetría
+        B -. "VAD Status" .-> M["Dashboard V2 (Vite)"]
+        C -. "Transcripts" .-> M
+        F -. "LLM Tokens" .-> M
+        G -. "TTS Status" .-> M
+        
+        %% Robot Face Integrations
+        D -. "Mood States (WS 8760)" .-> L
+    end
+```
+
+### Componentes Principales
+
+1. **VAD (Voice Activity Detection)**: Utiliza **Silero VAD** corriendo en la CPU. Evalúa ventanas de audio muy pequeñas (~32ms) para detectar con precisión cuándo el usuario empieza a hablar (Barge-in) y cuándo termina.
+2. **STT (Speech-to-Text)**: Implementado con **Faster-Whisper**. En hardware compatible (NVIDIA), corre en la GPU usando cuantización `int8_float16` para máxima velocidad. **Si no cuentas con GPU**, el sistema lo detectará automáticamente y ejecutará el modelo en la CPU utilizando cuantización `int8`, lo que permite un rendimiento aceptable en procesadores modernos sin necesidad de configuración adicional.
+3. **Manejador de Contexto (RAG)**: Integrado nativamente con **ChromaDB**. Antes de consultar al LLM, el texto es inyectado con contexto relevante extraído de los documentos cargados.
+4. **Proveedores LLM**: Arquitectura agnóstica mediante un patrón de fábrica (`LLMFactory`). Soporta Ollama para despliegues 100% privados y locales, o OpenAI/Gemini para mayor capacidad de razonamiento.
+5. **Proveedores TTS**: 
+   - **Piper**: Síntesis neuronal extremadamente rápida y ligera.
+   - **XTTS**: Clonación de voz avanzada alojada en Docker.
+   - **ElevenLabs**: TTS en la nube de máxima expresividad mediante WebSockets.
+6. **Telemetría en Tiempo Real**: Todo el estado interno (niveles de micro, detección de voz, streaming de tokens) se emite vía **Socket.IO** hacia el Dashboard V2, permitiendo un monitoreo exhaustivo sin afectar el ciclo de procesamiento de audio.
+
+---
+
+## ⚠️ Solución de Problemas (Troubleshooting)
+
+Al desplegar el sistema en un entorno completamente nuevo, podrías encontrarte con los siguientes casos límite:
+
+1. **Falla al instalar PyAudio (Librerías C ausentes)**
+   - Si durante la instalación de dependencias ves un error rojo extenso relacionado con `portaudio.h`, significa que te saltaste la instalación de dependencias del sistema.
+   - **Solución:** Ejecuta `sudo apt-get install portaudio19-dev python3-dev build-essential`.
+2. **Paquete `venv` de Python no instalado**
+   - En algunas distribuciones (como Ubuntu), Python 3 viene preinstalado, pero la librería para crear entornos aislados no. El script fallará al ejecutar `python3 -m venv venv`.
+   - **Solución:** Ejecuta `sudo apt-get install python3-venv`.
+3. **Falta de Node.js o npm**
+   - El script `start_v2.sh` requiere estrictamente `npm` para levantar el Dashboard, ya que es a través de este que se configura el agente (RAG, cambio de voces, etc). Si no lo tienes, el script se abortará intencionalmente.
+   - **Solución:** Instala Node.js y npm (`sudo apt-get install nodejs npm` o usa NVM).
+4. **El Puerto del Backend está ocupado**
+   - Si otro servicio está usando el puerto configurado (por defecto `5000`), el motor colapsará indicando `Address already in use`. A diferencia de Vite, el motor no cambia de puerto automáticamente.
+   - **Solución:** Modifica la variable `ENGINE_PORT` en tu archivo `.env` por otro puerto libre (ej. `5001`).
+5. **Instalación de Docker rechazada**
+   - Si usas `TTS_PROVIDER=xtts` y no tienes Docker, el script intentará instalarlo vía `apt`. Si usas macOS, Fedora, o CentOS, la instalación fallará.
+   - **Solución:** Instala Docker Desktop o Docker Engine manualmente para tu sistema operativo.
+6. **Falta de Memoria RAM (Proceso "Killed")**
+   - Si el sistema corre en un servidor con menos de 4GB de RAM y sin archivo Swap, el sistema operativo invocará al *OOM Killer* al cargar los modelos de lenguaje o STT en memoria, cerrando el proceso de Python repentinamente sin lanzar errores explícitos.
+   - **Solución:** Añade un archivo de paginación (Swap) de 8GB o incrementa la RAM física del servidor.

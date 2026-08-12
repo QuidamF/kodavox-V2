@@ -1,0 +1,16 @@
+{
+  "apps": [
+    {
+      "name": "kodavox-v2",
+      "script": "./start_v2.sh",
+      "interpreter": "bash",
+      "instances": 1,
+      "autorestart": false,
+      "watch": false,
+      "max_memory_restart": "4G",
+      "out_file": "./logs/pm2-out.log",
+      "error_file": "./logs/pm2-error.log",
+      "merge_logs": true
+    }
+  ]
+}

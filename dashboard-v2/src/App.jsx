@@ -6,9 +6,10 @@ import {
   Settings, Activity, Key, CheckSquare, CreditCard 
 } from 'lucide-react'
 
-// Nos conectaremos al motor monolítico (cuando esté corriendo en el puerto 5000)
-const SOCKET_URL = 'http://localhost:5000';
-const API_URL = 'http://localhost:5000/api';
+// Nos conectaremos al motor monolítico
+const PORT = import.meta.env.VITE_ENGINE_PORT || '5000';
+const SOCKET_URL = `http://localhost:${PORT}`;
+const API_URL = `http://localhost:${PORT}/api`;
 
 function App() {
   const [activeTab, setActiveTab] = useState('home');
