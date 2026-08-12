@@ -77,6 +77,7 @@ class MonolithicEngine:
         # 3. STT (Whisper) - Regresamos a GPU pero con CUANTIZACIÓN AGRESIVA (int8_float16)
         # Esto reduce el consumo de VRAM a menos de la mitad que float16, manteniendo la velocidad.
         print(f"[Engine] Cargando modelo Whisper {STT_MODEL} en GPU (Modo ultra-eficiente int8_float16)...")
+        print(f"         ⏳ (Si es la primera vez que usas '{STT_MODEL}', se descargará de internet. Esto puede tardar unos minutos y parecer congelado. ¡Paciencia!)")
         device = "cuda" if torch.cuda.is_available() else "cpu"
         # int8_float16 es el truco para GPUs con poca memoria pero que necesitan velocidad
         compute_type = "int8_float16" if device == "cuda" else "int8"
@@ -131,6 +132,10 @@ class MonolithicEngine:
                     default_voice_id = os.getenv("ELEVENLABS_VOICE_ID", "21m00Tcm4TlvDq8ikWAM")
                     self.elevenlabs_voices = state.get("elevenlabs_voices", [{"name": "Default (Env)", "id": default_voice_id}])
                     self.active_voice_id = state.get("active_voice_id", default_voice_id)
+                    self.voice_stability = state.get("voice_stability", 0.5)
+                    self.voice_similarity_boost = state.get("voice_similarity_boost", 0.75)
+                    self.voice_style = state.get("voice_style", 0.0)
+                    self.voice_use_speaker_boost = state.get("voice_use_speaker_boost", True)
                     self.wake_word = state.get("wake_word", os.getenv("WAKE_WORD", "KodaVox"))
                     self.wake_session_timeout = state.get("wake_session_timeout", int(float(os.getenv("WAKE_SESSION_TIMEOUT_SECONDS", "10"))))
                     self.native_audio_output = state.get("native_audio_output", True)
@@ -141,6 +146,10 @@ class MonolithicEngine:
                 default_voice_id = os.getenv("ELEVENLABS_VOICE_ID", "21m00Tcm4TlvDq8ikWAM")
                 self.elevenlabs_voices = [{"name": "Default (Env)", "id": default_voice_id}]
                 self.active_voice_id = default_voice_id
+                self.voice_stability = 0.5
+                self.voice_similarity_boost = 0.75
+                self.voice_style = 0.0
+                self.voice_use_speaker_boost = True
                 self.wake_word = os.getenv("WAKE_WORD", "KodaVox")
                 self.wake_session_timeout = int(float(os.getenv("WAKE_SESSION_TIMEOUT_SECONDS", "10")))
                 self.native_audio_output = True
@@ -152,10 +161,23 @@ class MonolithicEngine:
             default_voice_id = os.getenv("ELEVENLABS_VOICE_ID", "21m00Tcm4TlvDq8ikWAM")
             self.elevenlabs_voices = [{"name": "Default (Env)", "id": default_voice_id}]
             self.active_voice_id = default_voice_id
+            self.voice_stability = 0.5
+            self.voice_similarity_boost = 0.75
+            self.voice_style = 0.0
+            self.voice_use_speaker_boost = True
             self.wake_word = os.getenv("WAKE_WORD", "KodaVox")
             self.wake_session_timeout = int(float(os.getenv("WAKE_SESSION_TIMEOUT_SECONDS", "10")))
             self.native_audio_output = True
             self.robot_face_sync = False
+
+    def _update_elevenlabs_settings(self):
+        if getattr(self, 'elevenlabs_tts', None) is not None:
+            self.elevenlabs_tts.update_settings(
+                stability=getattr(self, 'voice_stability', 0.5),
+                similarity_boost=getattr(self, 'voice_similarity_boost', 0.75),
+                style=getattr(self, 'voice_style', 0.0),
+                use_speaker_boost=getattr(self, 'voice_use_speaker_boost', True)
+            )
 
     def _save_engine_state(self):
         state_path = os.path.join(os.path.dirname(__file__), "data", "engine_state.json")
@@ -167,6 +189,10 @@ class MonolithicEngine:
                     "personality_prompt": self.personality_prompt,
                     "elevenlabs_voices": self.elevenlabs_voices,
                     "active_voice_id": self.active_voice_id,
+                    "voice_stability": getattr(self, 'voice_stability', 0.5),
+                    "voice_similarity_boost": getattr(self, 'voice_similarity_boost', 0.75),
+                    "voice_style": getattr(self, 'voice_style', 0.0),
+                    "voice_use_speaker_boost": getattr(self, 'voice_use_speaker_boost', True),
                     "wake_word": self.wake_word,
                     "wake_session_timeout": self.wake_session_timeout,
                     "native_audio_output": self.native_audio_output,
@@ -198,6 +224,7 @@ class MonolithicEngine:
         if TTS_PROVIDER == "elevenlabs":
             try:
                 self.elevenlabs_tts = ElevenLabsTTSService()
+                self._update_elevenlabs_settings()
                 print(f"[Engine] ElevenLabs listo (Voice ID: {self.elevenlabs_tts.voice_id}).")
             except Exception as error:
                 self.elevenlabs_tts = None
@@ -602,6 +629,7 @@ class MonolithicEngine:
         """Sintetiza con ElevenLabs API y reproduce el audio PCM en tiempo real."""
         if self.elevenlabs_tts is None or self.elevenlabs_tts.voice_id != self.active_voice_id:
             self.elevenlabs_tts = ElevenLabsTTSService(voice_id=self.active_voice_id)
+            self._update_elevenlabs_settings()
 
         print(f"[TTS] Sintetizando (ElevenLabs): {text}")
         await self.emit_telemetry('telemetry_tts', {"is_playing": True})
@@ -633,6 +661,7 @@ class MonolithicEngine:
         """Sintetiza con ElevenLabs WS y reproduce el audio PCM en tiempo real."""
         if self.elevenlabs_tts is None or self.elevenlabs_tts.voice_id != self.active_voice_id:
             self.elevenlabs_tts = ElevenLabsTTSService(voice_id=self.active_voice_id)
+            self._update_elevenlabs_settings()
 
         print("[TTS] Iniciando Input Streaming (ElevenLabs)...")
         await self.emit_telemetry('telemetry_tts', {"is_playing": True})
@@ -735,11 +764,63 @@ async def set_personality(prompt: str = Body(..., embed=True)):
     engine._save_engine_state()
     return {"message": "Personalidad actualizada"}
 
+@app.post("/api/config/voices/clone")
+async def clone_voice(
+    name: str = Form(...),
+    file: UploadFile = File(...)
+):
+    api_key = os.getenv("ELEVENLABS_API_KEY", "")
+    if not api_key:
+        raise HTTPException(status_code=400, detail="API Key de ElevenLabs no configurada")
+        
+    url = "https://api.elevenlabs.io/v1/voices/add"
+    headers = {
+        "xi-api-key": api_key,
+        "Accept": "application/json"
+    }
+    
+    file_content = await file.read()
+    
+    files = [
+        ("files", (file.filename, file_content, file.content_type))
+    ]
+    data = {
+        "name": name,
+        "description": "Clonado desde KodaVox Dashboard"
+    }
+    
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.post(url, headers=headers, data=data, files=files, timeout=60.0)
+            if response.status_code != 200:
+                print(f"[ElevenLabs Error] {response.text}")
+                raise HTTPException(status_code=response.status_code, detail="Error al clonar en ElevenLabs")
+                
+            result = response.json()
+            new_voice_id = result.get("voice_id")
+            
+            if new_voice_id:
+                engine.elevenlabs_voices.append({"name": name, "id": new_voice_id})
+                engine._save_engine_state()
+                return {"message": f"Voz '{name}' clonada exitosamente", "voice_id": new_voice_id}
+            else:
+                raise HTTPException(status_code=500, detail="No se recibió un ID de voz")
+                
+    except Exception as e:
+        print(f"[ElevenLabs Exception] {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.get("/api/config/voices")
 async def get_voices():
     return {
         "voices": engine.elevenlabs_voices,
-        "active_voice_id": engine.active_voice_id
+        "active_voice_id": engine.active_voice_id,
+        "settings": {
+            "stability": getattr(engine, 'voice_stability', 0.5),
+            "similarity_boost": getattr(engine, 'voice_similarity_boost', 0.75),
+            "style": getattr(engine, 'voice_style', 0.0),
+            "use_speaker_boost": getattr(engine, 'voice_use_speaker_boost', True)
+        }
     }
 
 @app.post("/api/config/voices")
@@ -757,12 +838,29 @@ async def delete_voice(voice_id: str):
     return {"message": "Voz eliminada"}
 
 @app.post("/api/config/voices/active")
-async def set_active_voice(voice_id: str = Body(..., embed=True)):
-    if any(v["id"] == voice_id for v in engine.elevenlabs_voices):
-        engine.active_voice_id = voice_id
-        engine._save_engine_state()
-        return {"message": "Voz activa actualizada"}
-    raise HTTPException(status_code=404, detail="ID de voz no encontrado en la lista")
+async def set_active_voice(payload: dict = Body(...)):
+    voice_id = payload.get("id")
+    if not any(v["id"] == voice_id for v in engine.elevenlabs_voices):
+        raise HTTPException(status_code=400, detail="Voice ID no registrado")
+        
+    engine.active_voice_id = voice_id
+    if getattr(engine, 'elevenlabs_tts', None) is not None:
+        engine.elevenlabs_tts = ElevenLabsTTSService(voice_id=voice_id)
+        engine._update_elevenlabs_settings()
+        
+    engine._save_engine_state()
+    return {"message": "Voz activa actualizada"}
+
+@app.post("/api/config/voices/settings")
+async def update_voice_settings(payload: dict = Body(...)):
+    engine.voice_stability = float(payload.get("stability", getattr(engine, 'voice_stability', 0.5)))
+    engine.voice_similarity_boost = float(payload.get("similarity_boost", getattr(engine, 'voice_similarity_boost', 0.75)))
+    engine.voice_style = float(payload.get("style", getattr(engine, 'voice_style', 0.0)))
+    engine.voice_use_speaker_boost = bool(payload.get("use_speaker_boost", getattr(engine, 'voice_use_speaker_boost', True)))
+    
+    engine._update_elevenlabs_settings()
+    engine._save_engine_state()
+    return {"message": "Voice settings updated successfully"}
 
 @app.get("/api/config/wakeword")
 async def get_wakeword():
@@ -796,6 +894,16 @@ async def set_hardware(payload: dict = Body(...)):
         
     engine._save_engine_state()
     return {"message": "Configuración de hardware actualizada exitosamente"}
+
+@app.post("/api/tts/test")
+async def test_tts(payload: dict = Body(...)):
+    text = payload.get("text", "Hola, esta es una prueba de voz de KodaVox.")
+    if TTS_PROVIDER == "off":
+        raise HTTPException(status_code=400, detail="El proveedor TTS está desactivado (off).")
+    
+    # Lo lanzamos como tarea en segundo plano para no bloquear la petición HTTP
+    asyncio.create_task(engine.play_tts(text))
+    return {"message": "Sintetizando voz..."}
 
 @app.get("/api/diagnostics/health")
 async def get_health():

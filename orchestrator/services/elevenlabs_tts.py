@@ -18,6 +18,16 @@ class ElevenLabsTTSService:
         self.api_key = os.getenv("ELEVENLABS_API_KEY", "")
         self.voice_id = voice_id or os.getenv("ELEVENLABS_VOICE_ID", DEFAULT_VOICE_ID)
         self.model_id = os.getenv("ELEVENLABS_MODEL_ID", DEFAULT_MODEL_ID)
+        self.stability = 0.5
+        self.similarity_boost = 0.75
+        self.style = 0.0
+        self.use_speaker_boost = True
+
+    def update_settings(self, stability: float, similarity_boost: float, style: float, use_speaker_boost: bool):
+        self.stability = stability
+        self.similarity_boost = similarity_boost
+        self.style = style
+        self.use_speaker_boost = use_speaker_boost
 
     async def stream_audio_pcm(self, text: str) -> AsyncGenerator[bytes, None]:
         """Envía el texto a ElevenLabs por HTTP y entrega fragmentos de audio PCM de 24kHz (16-bit mono)."""
@@ -40,8 +50,10 @@ class ElevenLabsTTSService:
             "text": text,
             "model_id": self.model_id,
             "voice_settings": {
-                "stability": 0.5,
-                "similarity_boost": 0.75,
+                "stability": self.stability,
+                "similarity_boost": self.similarity_boost,
+                "style": self.style,
+                "use_speaker_boost": self.use_speaker_boost
             },
         }
 
@@ -73,8 +85,10 @@ class ElevenLabsTTSService:
                 bos_message = {
                     "text": " ",
                     "voice_settings": {
-                        "stability": 0.5,
-                        "similarity_boost": 0.75
+                        "stability": self.stability,
+                        "similarity_boost": self.similarity_boost,
+                        "style": self.style,
+                        "use_speaker_boost": self.use_speaker_boost
                     },
                     "xi_api_key": self.api_key,
                 }

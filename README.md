@@ -116,13 +116,22 @@ Si el `INTERACTION_MODE` en tu `.env` está configurado como `wakeword`, aquí d
 - **Palabra de Activación**: El nombre al cual responde. Ejemplo: `Computadora` o `Jarvis`.
 - **Temporizador de Sesión**: Los segundos que permanecerá atento a comandos subsecuentes sin necesidad de repetir su nombre (Ej. `10` segundos).
 
-### 4. Voz (Catálogo ElevenLabs)
-Si usas `TTS_PROVIDER=elevenlabs`, aquí puedes registrar nuevas voces y alternar entre ellas.
-- **Añadir Voz**: Coloca un "Nombre Descriptivo" (Ej. `Drew (Narrador)`) y pega el "ID de ElevenLabs" (una cadena alfanumérica).
-- **Activar**: Usa el menú desplegable superior para cambiar la voz activa al instante.
+### 4. Voz (Catálogo y Clonación ElevenLabs)
+Si usas `TTS_PROVIDER=elevenlabs`, aquí puedes registrar nuevas voces, personalizar su estilo y alternar entre ellas de forma dinámica.
 
-**Voces Populares de ElevenLabs (Ejemplos que puedes agregar):**
-- **Rachel** (Femenina, Americana, Narración): `21m00Tcm4TlvDq8ikWAM` *(La voz por defecto de KodaVox)*
+- **Seleccionar Voz**: Usa el menú desplegable superior para cambiar la voz activa al instante.
+- **Personalización de Emoción y Estilo**:
+  - **Estabilidad**: Define qué tan variable y emotiva (0.0) o qué tan fija y monótona (1.0) suena la voz.
+  - **Similitud**: Qué tan apegada es la lectura a la voz clonada original.
+  - **Exageración de Estilo**: Amplifica el estilo y las emociones deducidas del texto.
+- **Añadir Nueva Voz (Por ID)**: Coloca un "Nombre Descriptivo" (Ej. `Drew (Narrador)`) y pega el "ID de ElevenLabs" (una cadena alfanumérica).
+- **Añadir Nueva Voz (Clonar)**: Crea voces en vivo subiendo un archivo `.mp3` / `.wav` o grabando directamente con tu micrófono desde el navegador.
+
+> [!WARNING]
+> **Limitación de Clonación:** La creación de nuevas voces (Clonación) requiere de una suscripción de pago en ElevenLabs (Plan *Starter* o superior). Si estás en el plan **gratuito (Free Tier)**, recibirás un error `401 Unauthorized` al intentar clonar. Si es tu caso, usa la pestaña "Por ID" para agregar las voces pre-hechas listadas abajo.
+
+**Voces Populares de ElevenLabs (Ejemplos para añadir "Por ID"):**
+- **Rachel** (Femenina, Americana, Narración): `21m00Tcm4TlvDq8ikWAM` *(Voz por defecto)*
 - **Drew** (Masculino, Americano, Noticias): `29vD33N1CtxCmqQRPOHJ`
 - **Antoni** (Masculino, Americano, Calmado): `ErXwobaYiN019PkySvjV`
 - **Domi** (Femenina, Americana, Emocional): `AZnzlk1XvdvUeBnXmlld`
@@ -145,6 +154,7 @@ Permite inyectar información contextual a largo plazo para que el LLM responda 
 ## 👥 Notas de Desarrollo
 - El motor se comunica con **Ollama** en `http://127.0.0.1:11434`. Asegúrate de tener Ollama corriendo localmente con el modelo configurado (por defecto `qwen2.5:3b`).
 - La configuración principal reside en el archivo `.env` en la raíz.
+- **Descargas la Primera Vez:** Cuando cambies la variable `STT_MODEL` (ej. a `tiny` o `medium`), el sistema descargará el modelo de Internet la primera vez que se ejecute. Esto puede tomar varios minutos sin mostrar una barra de progreso; no cierres el programa.
 - La voz de XTTS se conserva en la configuración persistente del servicio, para reutilizar sus latentes. Para forzar otra voz al iniciar, define `TTS_CONFIGURE_VOICE_ON_START=true` y `VOICE_SAMPLE=<archivo.wav>` en `.env`.
 - Puedes seleccionar `TTS_PROVIDER=xtts`, `TTS_PROVIDER=piper` u `off`. Piper usa por defecto `models/es_MX-claude-high.onnx`, no requiere GPU ni clonación y admite ajustar la velocidad con `PIPER_LENGTH_SCALE`.
 - La precisión de STT se controla con `STT_MODEL` (`small` o `medium`), `STT_INITIAL_PROMPT`, `STT_VAD_FILTER` y `STT_CONDITION_ON_PREVIOUS_TEXT`. `medium` requiere más VRAM y suele aportar mejor precisión en español.

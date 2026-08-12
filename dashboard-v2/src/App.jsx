@@ -3,7 +3,7 @@ import { io } from 'socket.io-client'
 import { 
   Mic, MicOff, MessageSquare, Cpu, Volume2, 
   Database, Upload, Trash, Plus, User, 
-  Settings, Activity, Key, CheckSquare, CreditCard 
+  Settings, Activity, Key, CheckSquare, CreditCard, UploadCloud 
 } from 'lucide-react'
 
 // Nos conectaremos al motor monolítico
@@ -36,8 +36,19 @@ function App() {
   const [activeVoiceId, setActiveVoiceId] = useState("");
   const [newVoiceName, setNewVoiceName] = useState("");
   const [newVoiceId, setNewVoiceId] = useState("");
+  const [voiceAddMode, setVoiceAddMode] = useState("id"); // "id" or "clone"
+  const [cloneVoiceName, setCloneVoiceName] = useState("");
+  const [cloneFile, setCloneFile] = useState(null);
+  const [isCloning, setIsCloning] = useState(false);
+  const [isRecording, setIsRecording] = useState(false);
+  const [mediaRecorder, setMediaRecorder] = useState(null);
   const [wakeWord, setWakeWord] = useState("");
   const [wakeTimeout, setWakeTimeout] = useState(10);
+  const [testVoiceText, setTestVoiceText] = useState("Hola, esta es una prueba de voz de KodaVox.");
+  const [voiceStability, setVoiceStability] = useState(0.5);
+  const [voiceSimilarity, setVoiceSimilarity] = useState(0.75);
+  const [voiceStyle, setVoiceStyle] = useState(0.0);
+  const [voiceSpeakerBoost, setVoiceSpeakerBoost] = useState(true);
 
   // Diagnostics States
   const [healthStatus, setHealthStatus] = useState(null);
@@ -71,6 +82,12 @@ function App() {
         const data = await resV.json();
         setElevenlabsVoices(data.voices);
         setActiveVoiceId(data.active_voice_id);
+        if (data.settings) {
+          setVoiceStability(data.settings.stability);
+          setVoiceSimilarity(data.settings.similarity_boost);
+          setVoiceStyle(data.settings.style);
+          setVoiceSpeakerBoost(data.settings.use_speaker_boost);
+        }
       }
       const resW = await fetch(`${API_URL}/config/wakeword`);
       if (resW.ok) {
@@ -261,6 +278,104 @@ function App() {
       fetchConfig();
     } catch (e) {
       console.error(e);
+    }
+  };
+
+  const handleSaveVoiceSettings = async () => {
+    try {
+      await fetch(`${API_URL}/config/voices/settings`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          stability: voiceStability,
+          similarity_boost: voiceSimilarity,
+          style: voiceStyle,
+          use_speaker_boost: voiceSpeakerBoost
+        })
+      });
+      alert("Configuración de voz guardada correctamente.");
+    } catch (e) {
+      console.error("Error saving voice settings:", e);
+    }
+  };
+
+  const startRecording = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const recorder = new MediaRecorder(stream);
+      const chunks = [];
+      recorder.ondataavailable = (e) => chunks.push(e.data);
+      recorder.onstop = () => {
+        const blob = new Blob(chunks, { type: "audio/mp3" });
+        const file = new File([blob], "grabacion.mp3", { type: "audio/mp3" });
+        setCloneFile(file);
+      };
+      recorder.start();
+      setMediaRecorder(recorder);
+      setIsRecording(true);
+    } catch (e) {
+      alert("No se pudo acceder al micrófono.");
+      console.error(e);
+    }
+  };
+
+  const stopRecording = () => {
+    if (mediaRecorder && isRecording) {
+      mediaRecorder.stop();
+      setIsRecording(false);
+      mediaRecorder.stream.getTracks().forEach(track => track.stop());
+    }
+  };
+
+  const handleCloneVoice = async (e) => {
+    e.preventDefault();
+    if (!cloneVoiceName.trim() || !cloneFile) {
+      alert("Proporciona un nombre y un archivo de audio.");
+      return;
+    }
+    setIsCloning(true);
+    const formData = new FormData();
+    formData.append("name", cloneVoiceName);
+    formData.append("file", cloneFile);
+
+    try {
+      const res = await fetch(`${API_URL}/config/voices/clone`, {
+        method: "POST",
+        body: formData,
+      });
+      if (res.ok) {
+        alert("Voz clonada exitosamente");
+        setCloneVoiceName("");
+        setCloneFile(null);
+        fetchConfig();
+        setVoiceAddMode("id");
+      } else {
+        const errorData = await res.json();
+        alert(`Error al clonar: ${errorData.detail}`);
+      }
+    } catch (e) {
+      console.error(e);
+      alert("Error de conexión al clonar voz.");
+    } finally {
+      setIsCloning(false);
+    }
+  };
+
+  const handleTestVoice = async (e) => {
+    e.preventDefault();
+    if (!testVoiceText.trim()) return;
+    try {
+      const res = await fetch(`${API_URL}/tts/test`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text: testVoiceText })
+      });
+      if (!res.ok) {
+        const err = await res.json();
+        alert(`Error: ${err.detail}`);
+      }
+    } catch (e) {
+      console.error("Error testing voice:", e);
     }
   };
 
@@ -530,58 +645,204 @@ function App() {
                   </div>
                 </div>
 
-                <div className="mb-8 bg-slate-950/50 p-6 rounded-xl border border-slate-800/50 flex items-center justify-between">
-                  <div>
-                    <h3 className="font-semibold text-lg text-slate-200">Voz Activa Actual</h3>
-                    <p className="text-slate-400 text-sm">Esta es la voz con la que responderá KodaVox.</p>
+                <div className="mb-8 bg-slate-950/50 p-6 rounded-xl border border-slate-800/50 flex flex-col gap-6">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <h3 className="font-semibold text-lg text-slate-200">Voz Activa Actual</h3>
+                      <p className="text-slate-400 text-sm">Esta es la voz con la que responderá KodaVox.</p>
+                    </div>
+                    <select 
+                      className="bg-slate-900 border border-indigo-500/50 rounded-xl px-4 py-2 text-slate-200 outline-none focus:border-indigo-400 shadow-lg shadow-indigo-500/10 min-w-[200px]"
+                      value={activeVoiceId}
+                      onChange={handleSetActiveVoice}
+                    >
+                      {elevenlabsVoices.map(v => (
+                        <option key={v.id} value={v.id}>{v.name}</option>
+                      ))}
+                    </select>
                   </div>
-                  <select 
-                    className="bg-slate-900 border border-indigo-500/50 rounded-xl px-4 py-2 text-slate-200 outline-none focus:border-indigo-400 shadow-lg shadow-indigo-500/10 min-w-[200px]"
-                    value={activeVoiceId}
-                    onChange={handleSetActiveVoice}
-                  >
-                    {elevenlabsVoices.map(v => (
-                      <option key={v.id} value={v.id}>{v.name}</option>
-                    ))}
-                  </select>
+
+                  <div className="h-px bg-slate-800/50 w-full"></div>
+
+                  <div>
+                    <h3 className="font-semibold mb-2 text-slate-300 flex items-center gap-2 text-sm">
+                      <MessageSquare size={16} className="text-indigo-400" /> Probar Voz Seleccionada
+                    </h3>
+                    <form onSubmit={handleTestVoice} className="flex gap-4">
+                      <input 
+                        type="text" 
+                        value={testVoiceText}
+                        onChange={(e) => setTestVoiceText(e.target.value)}
+                        className="flex-1 bg-slate-900 border border-slate-800 rounded-lg px-4 py-2 text-sm text-slate-200 focus:outline-none focus:border-indigo-500"
+                        placeholder="Escribe algo para probar la voz..."
+                      />
+                      <button 
+                        type="submit"
+                        disabled={ttsActive}
+                        className="bg-indigo-600 hover:bg-indigo-500 disabled:bg-slate-700 disabled:text-slate-400 px-6 py-2 rounded-lg transition-colors text-white text-sm font-medium shadow-lg shadow-indigo-500/20 whitespace-nowrap"
+                      >
+                        {ttsActive ? 'Hablando...' : 'Escuchar Voz'}
+                      </button>
+                    </form>
+                  </div>
+                </div>
+
+                <div className="mb-8 bg-slate-950 p-6 rounded-xl border border-slate-800 shadow-inner">
+                  <div className="flex items-center justify-between mb-6">
+                    <div>
+                      <h3 className="font-semibold text-slate-300">Personalización de Emoción y Estilo</h3>
+                      <p className="text-xs text-slate-500 mt-1">Ajusta cómo la IA interpreta y pronuncia las emociones de la voz.</p>
+                    </div>
+                    <button onClick={handleSaveVoiceSettings} className="bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs px-4 py-2 rounded-lg transition-colors border border-slate-700 shadow-sm">
+                      Guardar Ajustes
+                    </button>
+                  </div>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+                    <div>
+                      <div className="flex justify-between text-xs mb-2">
+                        <span className="text-slate-400 font-medium">Estabilidad</span>
+                        <span className="text-indigo-400 font-mono bg-indigo-500/10 px-2 rounded">{voiceStability.toFixed(2)}</span>
+                      </div>
+                      <input type="range" min="0" max="1" step="0.01" value={voiceStability} onChange={(e) => setVoiceStability(parseFloat(e.target.value))} className="w-full accent-indigo-500 mb-1" />
+                      <div className="flex justify-between text-[10px] text-slate-500">
+                        <span>Emotivo / Variable</span>
+                        <span>Monótono / Fijo</span>
+                      </div>
+                    </div>
+                    <div>
+                      <div className="flex justify-between text-xs mb-2">
+                        <span className="text-slate-400 font-medium">Similitud (Similarity Boost)</span>
+                        <span className="text-indigo-400 font-mono bg-indigo-500/10 px-2 rounded">{voiceSimilarity.toFixed(2)}</span>
+                      </div>
+                      <input type="range" min="0" max="1" step="0.01" value={voiceSimilarity} onChange={(e) => setVoiceSimilarity(parseFloat(e.target.value))} className="w-full accent-indigo-500 mb-1" />
+                      <div className="flex justify-between text-[10px] text-slate-500">
+                        <span>Voz Genérica</span>
+                        <span>Clon Original</span>
+                      </div>
+                    </div>
+                    <div>
+                      <div className="flex justify-between text-xs mb-2">
+                        <span className="text-slate-400 font-medium">Exageración de Estilo</span>
+                        <span className="text-indigo-400 font-mono bg-indigo-500/10 px-2 rounded">{voiceStyle.toFixed(2)}</span>
+                      </div>
+                      <input type="range" min="0" max="1" step="0.01" value={voiceStyle} onChange={(e) => setVoiceStyle(parseFloat(e.target.value))} className="w-full accent-indigo-500 mb-1" />
+                    </div>
+                    <div className="flex items-center justify-between bg-slate-900 px-4 py-3 rounded-xl border border-slate-800 h-[60px]">
+                      <div>
+                        <span className="text-sm font-medium text-slate-300 block">Speaker Boost</span>
+                        <span className="text-[10px] text-slate-500">Mejora la calidad del clon.</span>
+                      </div>
+                      <label className="relative inline-flex items-center cursor-pointer">
+                        <input type="checkbox" className="sr-only peer" checked={voiceSpeakerBoost} onChange={(e) => setVoiceSpeakerBoost(e.target.checked)} />
+                        <div className="w-11 h-6 bg-slate-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-slate-300 after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-indigo-500 border border-slate-700"></div>
+                      </label>
+                    </div>
+                  </div>
                 </div>
 
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
-                  <div className="bg-slate-950 p-6 rounded-xl border border-slate-800">
-                    <h3 className="font-semibold mb-4 text-slate-300">Añadir Nueva Voz</h3>
-                    <form onSubmit={handleAddVoice} className="flex flex-col gap-4">
-                      <div className="space-y-1">
-                        <label className="text-xs text-slate-500 ml-1">Nombre Descriptivo</label>
-                        <input 
-                          type="text" 
-                          placeholder="ej. Drew (Narrador)" 
-                          value={newVoiceName}
-                          onChange={(e) => setNewVoiceName(e.target.value)}
-                          className="w-full bg-slate-900 border border-slate-800 rounded-lg px-4 py-2.5 text-sm text-slate-200 focus:outline-none focus:border-indigo-500"
-                        />
+                  <div className="bg-slate-950 p-6 rounded-xl border border-slate-800 h-fit">
+                    <div className="flex items-center justify-between mb-4">
+                      <h3 className="font-semibold text-slate-300">Añadir Voz</h3>
+                      <div className="flex bg-slate-900 rounded-lg p-1 border border-slate-800">
+                        <button
+                          onClick={() => setVoiceAddMode("id")}
+                          className={`px-3 py-1 text-xs rounded-md transition-colors ${voiceAddMode === "id" ? "bg-indigo-600 text-white" : "text-slate-400 hover:text-slate-200"}`}
+                        >
+                          Por ID
+                        </button>
+                        <button
+                          onClick={() => setVoiceAddMode("clone")}
+                          className={`px-3 py-1 text-xs rounded-md transition-colors ${voiceAddMode === "clone" ? "bg-indigo-600 text-white" : "text-slate-400 hover:text-slate-200"}`}
+                        >
+                          Clonar
+                        </button>
                       </div>
-                      <div className="space-y-1">
-                        <label className="text-xs text-slate-500 ml-1">ID de ElevenLabs</label>
-                        <input 
-                          type="text" 
-                          placeholder="ej. 21m00Tcm4TlvDq8ikWAM" 
-                          value={newVoiceId}
-                          onChange={(e) => setNewVoiceId(e.target.value)}
-                          className="w-full bg-slate-900 border border-slate-800 rounded-lg px-4 py-2.5 text-sm text-slate-200 focus:outline-none focus:border-indigo-500"
-                        />
-                      </div>
-                      <button 
-                        type="submit"
-                        className="bg-indigo-600 hover:bg-indigo-500 px-4 py-2.5 rounded-lg transition-colors text-white font-medium flex items-center justify-center gap-2 mt-2"
-                      >
-                        <Plus size={18} /> Registrar Voz
-                      </button>
-                    </form>
+                    </div>
+
+                    {voiceAddMode === "id" ? (
+                      <form onSubmit={handleAddVoice} className="flex flex-col gap-4 animate-in fade-in slide-in-from-bottom-2 duration-300">
+                        <div className="space-y-1">
+                          <label className="text-xs text-slate-500 ml-1">Nombre Descriptivo</label>
+                          <input 
+                            type="text" 
+                            placeholder="ej. Drew (Narrador)" 
+                            value={newVoiceName}
+                            onChange={(e) => setNewVoiceName(e.target.value)}
+                            className="w-full bg-slate-900 border border-slate-800 rounded-lg px-4 py-2.5 text-sm text-slate-200 focus:outline-none focus:border-indigo-500"
+                          />
+                        </div>
+                        <div className="space-y-1">
+                          <label className="text-xs text-slate-500 ml-1">ID de ElevenLabs</label>
+                          <input 
+                            type="text" 
+                            placeholder="ej. 21m00Tcm4TlvDq8ikWAM" 
+                            value={newVoiceId}
+                            onChange={(e) => setNewVoiceId(e.target.value)}
+                            className="w-full bg-slate-900 border border-slate-800 rounded-lg px-4 py-2.5 text-sm text-slate-200 focus:outline-none focus:border-indigo-500"
+                          />
+                        </div>
+                        <button 
+                          type="submit"
+                          className="bg-indigo-600 hover:bg-indigo-500 px-4 py-2.5 rounded-lg transition-colors text-white font-medium flex items-center justify-center gap-2 mt-2"
+                        >
+                          <Plus size={18} /> Registrar Voz
+                        </button>
+                      </form>
+                    ) : (
+                      <form onSubmit={handleCloneVoice} className="flex flex-col gap-4 animate-in fade-in slide-in-from-bottom-2 duration-300">
+                        <div className="space-y-1">
+                          <label className="text-xs text-slate-500 ml-1">Nombre para la Nueva Voz</label>
+                          <input 
+                            type="text" 
+                            placeholder="ej. Mi Clon de Voz" 
+                            value={cloneVoiceName}
+                            onChange={(e) => setCloneVoiceName(e.target.value)}
+                            className="w-full bg-slate-900 border border-slate-800 rounded-lg px-4 py-2.5 text-sm text-slate-200 focus:outline-none focus:border-indigo-500"
+                          />
+                        </div>
+                        
+                        <div className="space-y-1">
+                          <label className="text-xs text-slate-500 ml-1">Muestra de Audio (.mp3, .wav)</label>
+                          <div className="flex gap-2">
+                            <input 
+                              type="file" 
+                              accept="audio/mpeg,audio/wav"
+                              onChange={(e) => setCloneFile(e.target.files[0])}
+                              className="hidden"
+                              id="clone-file-upload"
+                            />
+                            <label htmlFor="clone-file-upload" className="flex-1 bg-slate-900 border border-slate-800 rounded-lg px-4 py-2.5 text-sm text-slate-400 hover:text-slate-200 cursor-pointer flex items-center gap-2 hover:bg-slate-800 transition-colors">
+                              <UploadCloud size={16} /> 
+                              {cloneFile ? cloneFile.name : "Subir Archivo"}
+                            </label>
+                            
+                            <button
+                              type="button"
+                              onClick={isRecording ? stopRecording : startRecording}
+                              className={`px-4 py-2.5 rounded-lg flex items-center justify-center transition-colors border ${isRecording ? 'bg-red-500/10 text-red-500 border-red-500/50 hover:bg-red-500/20' : 'bg-slate-900 text-slate-400 border-slate-800 hover:bg-slate-800 hover:text-slate-200'}`}
+                              title={isRecording ? "Detener Grabación" : "Grabar desde Micrófono"}
+                            >
+                              {isRecording ? <MicOff size={16} className="animate-pulse" /> : <Mic size={16} />}
+                            </button>
+                          </div>
+                          {isRecording && <p className="text-[10px] text-red-400 animate-pulse text-right">Grabando... (Click para detener)</p>}
+                        </div>
+                        
+                        <button 
+                          type="submit"
+                          disabled={isCloning || !cloneFile || !cloneVoiceName}
+                          className="bg-indigo-600 hover:bg-indigo-500 disabled:bg-slate-700 disabled:text-slate-500 px-4 py-2.5 rounded-lg transition-colors text-white font-medium flex items-center justify-center gap-2 mt-2"
+                        >
+                          {isCloning ? "Clonando Voz..." : "Crear Voz"}
+                        </button>
+                      </form>
+                    )}
                   </div>
 
                   <div className="bg-slate-950 p-6 rounded-xl border border-slate-800 flex flex-col">
                     <h3 className="font-semibold mb-4 text-slate-300">Voces Registradas</h3>
-                    <div className="space-y-3 flex-1 overflow-y-auto pr-2">
+                    <div className="space-y-3 max-h-[280px] overflow-y-auto pr-2 custom-scrollbar">
                       {elevenlabsVoices.map(v => (
                         <div key={v.id} className={`flex items-center justify-between p-3 rounded-lg border ${v.id === activeVoiceId ? 'bg-indigo-500/10 border-indigo-500/50' : 'bg-slate-900 border-slate-800'}`}>
                           <div>
