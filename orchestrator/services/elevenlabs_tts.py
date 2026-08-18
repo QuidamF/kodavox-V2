@@ -74,13 +74,13 @@ class ElevenLabsTTSService:
     async def stream_input_pcm(self, text_iterator: AsyncGenerator[str, None]) -> AsyncGenerator[bytes, None]:
         """Envía texto token a token por WebSocket (Input Streaming) y devuelve audio PCM de 24kHz en tiempo real."""
         if not self.api_key:
-            print("[ElevenLabs Error] ELEVENLABS_API_KEY no configurada.")
+            print("[ElevenLabs Error] ELEVENLABS_API_KEY no configurada.", flush=True)
             return
 
         url = f"wss://api.elevenlabs.io/v1/text-to-speech/{self.voice_id}/stream-input?model_id={self.model_id}&output_format=pcm_24000"
 
         try:
-            async with websockets.connect(url) as websocket:
+            async with websockets.connect(url, ping_interval=20, ping_timeout=20) as websocket:
                 # 1. Enviar payload inicial (BOS)
                 bos_message = {
                     "text": " ",
@@ -97,17 +97,27 @@ class ElevenLabsTTSService:
                 # 2. Tarea para enviar texto (sender)
                 async def sender():
                     char_count = 0
+                    token_buffer = ""
                     try:
                         async for token in text_iterator:
                             if token:
                                 char_count += len(token)
-                                await websocket.send(json.dumps({"text": token}))
-                        # Enviar EOS
-                        await websocket.send(json.dumps({"text": ""}))
+                                token_buffer += token
+                                # Forzar el envío inmediato de fragmentos con espacio o puntuación
+                                # ElevenLabs WebSocket procesa el audio cuando recibe signos de puntuación o "flush": true
+                                has_punctuation = any(c in token for c in ['.', ',', '!', '?', ';', ':', '\n'])
+                                payload = {"text": token}
+                                if has_punctuation:
+                                    payload["flush"] = True
+                                
+                                await websocket.send(json.dumps(payload))
+                                
+                        # Enviar EOS (End of Stream) con cadena vacía y flush
+                        await websocket.send(json.dumps({"text": "", "flush": True}))
                         if char_count > 0:
                             tracker.add_elevenlabs_chars(char_count)
                     except Exception as e:
-                        print(f"[ElevenLabs Sender Error] {e}")
+                        print(f"[ElevenLabs Sender Error] {e}", flush=True)
 
                 sender_task = asyncio.create_task(sender())
 
@@ -126,10 +136,10 @@ class ElevenLabsTTSService:
                 except websockets.exceptions.ConnectionClosed:
                     pass
                 except Exception as e:
-                    print(f"[ElevenLabs Receiver Error] {e}")
+                    print(f"[ElevenLabs Receiver Error] {e}", flush=True)
                 finally:
                     if not sender_task.done():
                         sender_task.cancel()
                         
         except Exception as error:
-            print(f"[ElevenLabs WS Error] {error}")
+            print(f"[ElevenLabs WS Error] {error}", flush=True)
