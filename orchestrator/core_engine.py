@@ -232,6 +232,7 @@ class MonolithicEngine:
 
         if TTS_PROVIDER == "elevenlabs":
             try:
+                from services.elevenlabs_tts import ElevenLabsTTSService
                 self.elevenlabs_tts = ElevenLabsTTSService()
                 self._update_elevenlabs_settings()
                 print(f"[Engine] ElevenLabs listo (Voice ID: {self.elevenlabs_tts.voice_id}).")
@@ -499,7 +500,25 @@ class MonolithicEngine:
     async def ask_llm(self, text: str):
         self.is_speaking = True 
         
-        # 1. Inyección de Contexto RAG
+        # 1. Verificación de Redis Cache para preguntas/respuestas frecuentes
+        try:
+            from services.redis_cache import redis_cache
+            cached_data = redis_cache.get(text)
+            if cached_data:
+                cached_text = cached_data.get("text", "")
+                await self.emit_telemetry('telemetry_llm', {"token": cached_text, "provider": "Redis Cache"})
+                self.conversation_history.append({"role": "user", "content": text})
+                self.conversation_history.append({"role": "assistant", "content": cached_text})
+                await self.play_tts(cached_text)
+                await asyncio.sleep(0.5)
+                self.is_speaking = False
+                if self.wake_session_active:
+                    self._schedule_wake_session_timeout()
+                return
+        except Exception as cache_err:
+            print(f"[Redis Cache Error] {cache_err}")
+
+        # 2. Inyección de Contexto RAG
         prompt = text
         if self.active_rag_collection:
             try:
@@ -514,23 +533,6 @@ class MonolithicEngine:
                 print(f"[Engine RAG Error] {e}")
 
         self.conversation_history.append({"role": "user", "content": prompt})
-        
-        # 2. Verificación de Redis Cache para preguntas/respuestas frecuentes
-        try:
-            from services.redis_cache import redis_cache
-            cached_data = redis_cache.get(text)
-            if cached_data:
-                cached_text = cached_data.get("text", "")
-                await self.emit_telemetry('telemetry_llm', {"token": cached_text, "provider": "Redis Cache"})
-                self.conversation_history.append({"role": "assistant", "content": cached_text})
-                await self.play_tts(cached_text)
-                await asyncio.sleep(0.5)
-                self.is_speaking = False
-                if self.wake_session_active:
-                    self._schedule_wake_session_timeout()
-                return
-        except Exception as cache_err:
-            print(f"[Redis Cache Error] {cache_err}")
 
         full_response_buffer = []
 
