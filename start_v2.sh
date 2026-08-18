@@ -113,9 +113,9 @@ fi
 source venv/bin/activate
 pip install -q -r requirements.txt
 
-echo "[3/4] Iniciando core_engine.py en el puerto $ENGINE_PORT..."
+echo "[3/4] Iniciando main.py (Modular Core) en el puerto $ENGINE_PORT..."
 # Corremos el motor mostrando salida en tiempo real
-python core_engine.py 2>&1 | tee engine.log &
+python main.py 2>&1 | tee engine.log &
 ENGINE_PID=$!
 cd ..
 

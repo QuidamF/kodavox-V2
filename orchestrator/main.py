@@ -1,45 +1,40 @@
+import os
 import asyncio
-import signal
-import sys
+import socketio
 import uvicorn
-from core.event_bus import EventBus
-from core.state_manager import StateManager
-from core.orchestrator import VoiceOrchestrator
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from contextlib import asynccontextmanager
 
-async def main():
-    # Inicializar componentes core
-    bus = EventBus()
-    state = StateManager(bus)
-    
-    # Inicializar Orquestador
-    orchestrator = VoiceOrchestrator(bus, state)
-    
-    print("==========================================")
-    print("   Iniciando Orquestador de Voz Modular   ")
-    print("==========================================")
+from core.pipeline import EnginePipeline
+from api.routes import router
 
-    # Manejar señales de interrupción (Ctrl+C)
-    def signal_handler(sig, frame):
-        print("\n[Main] Deteniendo sistema...")
-        # Limpieza básica
-        orchestrator.capturer.terminate()
-        sys.exit(0)
+sio = socketio.AsyncServer(async_mode='asgi', cors_allowed_origins='*')
+pipeline = EnginePipeline(sio=sio)
 
-    signal.signal(signal.SIGINT, signal_handler)
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    pipeline.loop = asyncio.get_running_loop()
+    await pipeline.setup_tts()
+    pipeline.run()
+    yield
+    if hasattr(pipeline, 'stream'):
+        pipeline.stream.stop_stream()
+        pipeline.stream.close()
+    pipeline.pa.terminate()
 
-    # Iniciar orquestador
-    orchestrator.start()
+app = FastAPI(lifespan=lifespan)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
-    # Iniciar servidor Uvicorn para Socket.IO
-    # Configurar uvicorn config
-    config = uvicorn.Config(app=bus.app, host="0.0.0.0", port=5000, log_level="info")
-    server = uvicorn.Server(config)
-
-    print("[Main] Starting Uvicorn server for Socket.IO on port 5000...")
-    await server.serve()
+app.include_router(router)
+socket_app = socketio.ASGIApp(sio, app)
 
 if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        pass
+    engine_port = int(os.getenv("ENGINE_PORT", "5000"))
+    uvicorn.run(socket_app, host="0.0.0.0", port=engine_port, log_level="warning")
