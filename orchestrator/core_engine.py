@@ -517,17 +517,23 @@ class MonolithicEngine:
         print(f"[Engine] Pensando con {self.llm_provider.provider_name} ({self.llm_provider.model_name})...")
         
         if TTS_PROVIDER == "elevenlabs":
-            async def token_generator():
-                try:
-                    async for token in self.llm_provider.generate_stream(prompt, system_prompt=self.personality_prompt, history=self.conversation_history[:-1]):
-                        if token:
-                            await self.emit_telemetry('telemetry_llm', {"token": token, "provider": self.llm_provider.provider_name})
-                            full_response_buffer.append(token)
-                            yield token
-                except Exception as error:
-                    print(f"[Engine LLM Error] {error}")
-            
-            await self.play_elevenlabs_tts_stream(token_generator())
+            sentence_buffer = ""
+            try:
+                async for token in self.llm_provider.generate_stream(prompt, system_prompt=self.personality_prompt, history=self.conversation_history[:-1]):
+                    if token:
+                        await self.emit_telemetry('telemetry_llm', {"token": token, "provider": self.llm_provider.provider_name})
+                        sentence_buffer += token
+                        full_response_buffer.append(token)
+                        if any(char in token for char in ['.', '!', '?', '\n']):
+                            cleaned_sentence = sentence_buffer.strip()
+                            if cleaned_sentence:
+                                await self.play_elevenlabs_tts(cleaned_sentence)
+                            sentence_buffer = ""
+            except Exception as error:
+                print(f"[Engine LLM Error] {error}", flush=True)
+                
+            if sentence_buffer.strip():
+                await self.play_elevenlabs_tts(sentence_buffer.strip())
         else:
             sentence_buffer = ""
             try:
