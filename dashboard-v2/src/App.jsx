@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { io } from 'socket.io-client'
 import { 
   Mic, MicOff, MessageSquare, Cpu, Volume2, 
@@ -8,8 +8,11 @@ import {
 
 // Nos conectaremos al motor monolítico
 const PORT = import.meta.env.VITE_ENGINE_PORT || '5000';
-const SOCKET_URL = `http://localhost:${PORT}`;
-const API_URL = `http://localhost:${PORT}/api`;
+const HOSTNAME = window.location.hostname || 'localhost';
+const PROTOCOL = window.location.protocol === 'https:' ? 'https' : 'http';
+
+const SOCKET_URL = `${PROTOCOL}://${HOSTNAME}:${PORT}`;
+const API_URL = `${PROTOCOL}://${HOSTNAME}:${PORT}/api`;
 
 function App() {
   const [activeTab, setActiveTab] = useState('home');
@@ -17,7 +20,8 @@ function App() {
   
   // Telemetry States
   const [vadActive, setVadActive] = useState(false);
-  const [micEnergy, setMicEnergy] = useState(0);
+  const micEnergyTextRef = useRef(null);
+  const micEnergyBarRef = useRef(null);
   const [sttText, setSttText] = useState("");
   const [llmStream, setLlmStream] = useState("");
   const [llmProvider, setLlmProvider] = useState("");
@@ -63,10 +67,12 @@ function App() {
   const [voiceSpeakerBoost, setVoiceSpeakerBoost] = useState(true);
 
   // Export/Import States
-  const [exportIncludeEnv, setExportIncludeEnv] = useState(false);
-  const [exportIncludeRag, setExportIncludeRag] = useState(false);
+  const [isExporting, setIsExporting] = useState(false);
   const [isImporting, setIsImporting] = useState(false);
   const [isRestarting, setIsRestarting] = useState(false);
+  const [exportIncludeEnv, setExportIncludeEnv] = useState(false);
+  const [exportIncludeRag, setExportIncludeRag] = useState(false);
+  const [exportIncludeCredentials, setExportIncludeCredentials] = useState(true);
 
   // Diagnostics States
   const [healthStatus, setHealthStatus] = useState(null);
@@ -76,6 +82,16 @@ function App() {
   const [nativeAudioOutput, setNativeAudioOutput] = useState(true);
   const [robotFaceSync, setRobotFaceSync] = useState(false);
 
+  // Credentials Setup Wizard
+  const [credentialsStatus, setCredentialsStatus] = useState(null);
+  const [showCredentialsModal, setShowCredentialsModal] = useState(false);
+  const [inputKeys, setInputKeys] = useState({
+    OPENAI_API_KEY: '',
+    GEMINI_API_KEY: '',
+    ELEVENLABS_API_KEY: ''
+  });
+  const [isSavingKeys, setIsSavingKeys] = useState(false);
+
   // Pricing (per 1M)
   const [costRates, setCostRates] = useState(() => {
     const saved = localStorage.getItem("kodavox_costs");
@@ -83,9 +99,18 @@ function App() {
     return { openai: 0.15, gemini: 0.0, elevenlabs: 15.0 }; // Default placeholders
   });
 
-  const saveCostRates = (newRates) => {
+  const saveCostRates = async (newRates) => {
     setCostRates(newRates);
     localStorage.setItem("kodavox_costs", JSON.stringify(newRates));
+    try {
+      await fetch(`${API_URL}/config/hardware`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ cost_rates: newRates })
+      });
+    } catch (e) {
+      console.error("Error saving cost rates to backend", e);
+    }
   };
 
   const fetchConfig = async () => {
@@ -128,6 +153,10 @@ function App() {
         const data = await resH.json();
         setNativeAudioOutput(data.native_audio_output);
         setRobotFaceSync(data.robot_face_sync);
+        if (data.cost_rates) {
+          setCostRates(data.cost_rates);
+          localStorage.setItem("kodavox_costs", JSON.stringify(data.cost_rates));
+        }
       }
     } catch (e) {
       console.error("Error fetching config:", e);
@@ -162,6 +191,62 @@ function App() {
       console.error("Error fetching diagnostics:", e);
     } finally {
       setIsCheckingHealth(false);
+    }
+  };
+
+  const fetchCredentialsStatus = async () => {
+    try {
+      const res = await fetch(`${API_URL}/config/credentials/status`);
+      if (res.ok) {
+        const data = await res.json();
+        setCredentialsStatus(data);
+        
+        // Determinar si falta alguna llave requerida
+        const needsOpenAI = data.llm_provider === 'openai' && !data.OPENAI_API_KEY;
+        const needsGemini = data.llm_provider === 'gemini' && !data.GEMINI_API_KEY;
+        const needsElevenLabs = (data.stt_provider === 'elevenlabs' || data.tts_provider === 'elevenlabs') && !data.ELEVENLABS_API_KEY;
+        
+        if (needsOpenAI || needsGemini || needsElevenLabs) {
+          setShowCredentialsModal(true);
+        }
+      }
+    } catch (e) {
+      console.error("Error fetching credentials status:", e);
+    }
+  };
+
+  const handleSaveCredentials = async (e) => {
+    e.preventDefault();
+    setIsSavingKeys(true);
+    try {
+      const res = await fetch(`${API_URL}/config/credentials`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(inputKeys)
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.needs_restart) {
+          setIsRestarting(true);
+          setShowCredentialsModal(false);
+          // Hacer polling hasta que vuelva a estar vivo
+          const pollInterval = setInterval(async () => {
+            try {
+              const ping = await fetch(`${API_URL}/diagnostics/health`, { signal: AbortSignal.timeout(2000) });
+              if (ping.ok) {
+                clearInterval(pollInterval);
+                window.location.reload();
+              }
+            } catch (e) {
+              // Aún no despierta, ignorar
+            }
+          }, 3000);
+        }
+      }
+    } catch (e) {
+      console.error("Error saving credentials:", e);
+      alert("Error al guardar credenciales");
+      setIsSavingKeys(false);
     }
   };
 
@@ -409,7 +494,8 @@ function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           include_env: exportIncludeEnv,
-          include_rag: exportIncludeRag
+          include_rag: exportIncludeRag,
+          include_credentials: exportIncludeCredentials
         })
       });
       
@@ -525,10 +611,19 @@ function App() {
       setConnected(true);
       fetchCollections();
       fetchConfig();
+      fetchCredentialsStatus();
     });
     socket.on('disconnect', () => setConnected(false));
 
-    socket.on('telemetry_mic', (data) => setMicEnergy(data.energy));
+    socket.on('telemetry_mic', (data) => {
+      if (micEnergyTextRef.current) {
+        micEnergyTextRef.current.textContent = data.energy;
+      }
+      if (micEnergyBarRef.current) {
+        const scale = Math.min(1, data.energy / 2000);
+        micEnergyBarRef.current.style.transform = `scaleX(${scale})`;
+      }
+    });
     socket.on('telemetry_vad', (data) => setVadActive(data.is_speaking));
     socket.on('telemetry_state', (data) => {
       if (data.state) setEngineState(data.state);
@@ -564,12 +659,12 @@ function App() {
 
   return (
     <div className="min-h-screen bg-slate-950 flex flex-col">
-      <header className="bg-slate-900 border-b border-slate-800 p-6 flex items-center justify-between shadow-md">
-        <div>
-          <h1 className="text-3xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-blue-400 to-emerald-400">
+      <header className="bg-slate-900 border-b border-slate-800 p-4 md:p-6 flex flex-col md:flex-row items-center justify-between shadow-md gap-4">
+        <div className="text-center md:text-left">
+          <h1 className="text-2xl md:text-3xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-blue-400 to-emerald-400">
             KodaVox V2
           </h1>
-          <p className="text-slate-400 mt-1 text-sm">Dashboard & Configuration Center</p>
+          <p className="text-slate-400 mt-1 text-xs md:text-sm">Dashboard & Configuration Center</p>
         </div>
         <div className={`px-4 py-2 rounded-full font-medium flex items-center gap-2 text-sm ${connected ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' : 'bg-red-500/10 text-red-400 border border-red-500/20'}`}>
           <div className={`w-2 h-2 rounded-full ${connected ? 'bg-emerald-400 animate-pulse' : 'bg-red-400'}`}></div>
@@ -577,9 +672,9 @@ function App() {
         </div>
       </header>
 
-      <div className="flex flex-1 overflow-hidden">
+      <div className="flex flex-col md:flex-row flex-1 overflow-hidden">
         {/* Sidebar Navigation */}
-        <aside className="w-64 bg-slate-900/50 border-r border-slate-800 p-4 flex flex-col gap-2 overflow-y-auto">
+        <aside className="w-full md:w-64 bg-slate-900/50 border-b md:border-b-0 md:border-r border-slate-800 p-4 flex flex-row md:flex-col gap-2 overflow-x-auto md:overflow-y-auto shrink-0 custom-scrollbar">
           {tabs.map(tab => {
             const Icon = tab.icon;
             const isActive = activeTab === tab.id;
@@ -593,15 +688,118 @@ function App() {
                     : 'text-slate-400 hover:bg-slate-800/50 hover:text-slate-200 border border-transparent'
                 }`}
               >
-                <Icon size={18} />
-                {tab.label}
+                <Icon size={18} className="shrink-0" />
+                <span className="whitespace-nowrap">{tab.label}</span>
               </button>
             )
           })}
         </aside>
 
+        {/* SETUP WIZARD / CREDENTIALS MODAL */}
+        {showCredentialsModal && credentialsStatus && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 backdrop-blur-sm animate-in fade-in duration-300">
+            <div className="bg-slate-900 w-full max-w-lg p-8 rounded-2xl border border-slate-700 shadow-2xl relative overflow-hidden flex flex-col max-h-[90vh]">
+              <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-blue-500 to-purple-500"></div>
+              
+              <div className="flex items-center gap-4 mb-6 shrink-0">
+                <div className="p-3 bg-blue-500/20 text-blue-400 rounded-xl">
+                  <Key size={28} />
+                </div>
+                <div>
+                  <h2 className="text-2xl font-bold text-white">Configuración de APIs</h2>
+                  <p className="text-sm text-slate-400">Introduce las llaves requeridas para los servicios en la nube que seleccionaste.</p>
+                </div>
+              </div>
+
+              <div className="overflow-y-auto pr-2 custom-scrollbar flex-1 mb-4">
+                <form id="credentials-form" onSubmit={handleSaveCredentials} className="space-y-5">
+                  {credentialsStatus.llm_provider === 'openai' && !credentialsStatus.OPENAI_API_KEY && (
+                    <div className="space-y-2">
+                      <label className="text-sm font-medium text-slate-300">OpenAI API Key <span className="text-red-400">*</span></label>
+                      <input 
+                        type="password" 
+                        required
+                        placeholder="sk-proj-..."
+                        value={inputKeys.OPENAI_API_KEY}
+                        onChange={e => setInputKeys({...inputKeys, OPENAI_API_KEY: e.target.value})}
+                        className="w-full bg-slate-950 border border-slate-700 rounded-xl px-4 py-3 text-slate-200 focus:outline-none focus:border-blue-500 transition-colors"
+                      />
+                    </div>
+                  )}
+
+                  {credentialsStatus.llm_provider === 'gemini' && !credentialsStatus.GEMINI_API_KEY && (
+                    <div className="space-y-2">
+                      <label className="text-sm font-medium text-slate-300">Google Gemini API Key <span className="text-red-400">*</span></label>
+                      <input 
+                        type="password" 
+                        required
+                        placeholder="AIzaSy..."
+                        value={inputKeys.GEMINI_API_KEY}
+                        onChange={e => setInputKeys({...inputKeys, GEMINI_API_KEY: e.target.value})}
+                        className="w-full bg-slate-950 border border-slate-700 rounded-xl px-4 py-3 text-slate-200 focus:outline-none focus:border-blue-500 transition-colors"
+                      />
+                    </div>
+                  )}
+
+                  {(credentialsStatus.stt_provider === 'elevenlabs' || credentialsStatus.tts_provider === 'elevenlabs') && !credentialsStatus.ELEVENLABS_API_KEY && (
+                    <div className="space-y-2">
+                      <label className="text-sm font-medium text-slate-300">ElevenLabs API Key <span className="text-red-400">*</span></label>
+                      <input 
+                        type="password" 
+                        required
+                        placeholder="sk_..."
+                        value={inputKeys.ELEVENLABS_API_KEY}
+                        onChange={e => setInputKeys({...inputKeys, ELEVENLABS_API_KEY: e.target.value})}
+                        className="w-full bg-slate-950 border border-slate-700 rounded-xl px-4 py-3 text-slate-200 focus:outline-none focus:border-blue-500 transition-colors"
+                      />
+                    </div>
+                  )}
+                </form>
+
+                <div className="mt-8 border-t border-slate-800 pt-6">
+                  <div className="flex items-center gap-2 mb-3">
+                    <DownloadCloud size={16} className="text-indigo-400" />
+                    <h3 className="text-sm font-semibold text-slate-300">¿Tienes un Respaldo?</h3>
+                  </div>
+                  <p className="text-xs text-slate-500 mb-4">Si exportaste tus credenciales y configuración previamente, puedes importarlas directamente aquí.</p>
+                  <div className="relative w-full">
+                    <input type="file" accept=".zip" id="import-profile-modal" className="hidden" onChange={handleImportProfile} disabled={isImporting} />
+                    <label 
+                      htmlFor="import-profile-modal" 
+                      className={`w-full ${isImporting ? 'bg-indigo-500/20 text-indigo-400 border-indigo-500/50 cursor-not-allowed' : 'bg-slate-950 text-indigo-400 hover:bg-indigo-500/10 border-slate-700 hover:border-indigo-500 cursor-pointer'} px-4 py-3 rounded-xl text-sm font-medium flex items-center justify-center gap-2 transition-colors border border-dashed`}
+                    >
+                      {isImporting ? <Loader2 size={16} className="animate-spin" /> : <UploadCloud size={16} />}
+                      {isImporting ? "Procesando Paquete..." : "Importar Perfil Completo (.zip)"}
+                    </label>
+                  </div>
+                </div>
+              </div>
+
+              <div className="pt-4 flex gap-3 shrink-0 mt-auto border-t border-slate-800/50">
+                <button 
+                  type="submit" 
+                  form="credentials-form"
+                  disabled={isSavingKeys || isImporting}
+                  className="flex-1 bg-blue-600 hover:bg-blue-500 text-white font-medium py-3 rounded-xl transition-colors disabled:opacity-50 flex items-center justify-center gap-2"
+                >
+                  {isSavingKeys ? <Loader2 size={18} className="animate-spin" /> : <CheckSquare size={18} />}
+                  {isSavingKeys ? 'Guardando...' : 'Guardar Llaves'}
+                </button>
+                <button 
+                  type="button" 
+                  onClick={() => setShowCredentialsModal(false)}
+                  disabled={isImporting}
+                  className="px-6 py-3 bg-slate-800 hover:bg-slate-700 text-slate-300 font-medium rounded-xl transition-colors disabled:opacity-50"
+                >
+                  Omitir
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* Main Content Area */}
-        <main className="flex-1 overflow-y-auto p-8 text-slate-200">
+        <main className="flex-1 overflow-y-auto p-4 md:p-8 text-slate-200">
           
           {/* TAB: HOME */}
           {activeTab === 'home' && (
@@ -619,12 +817,13 @@ function App() {
                   <div>
                     <div className="flex justify-between text-sm text-slate-400 mb-1">
                       <span>Energía (Mic)</span>
-                      <span>{micEnergy}</span>
+                      <span ref={micEnergyTextRef}>0</span>
                     </div>
                     <div className="w-full bg-slate-800 rounded-full h-3 overflow-hidden">
                       <div 
-                        className="bg-blue-500 h-3 transition-all duration-75"
-                        style={{ width: `${Math.min(100, (micEnergy / 2000) * 100)}%` }}
+                        ref={micEnergyBarRef}
+                        className="w-full bg-blue-500 h-3 origin-left transition-transform duration-75"
+                        style={{ transform: 'scaleX(0)' }}
                       ></div>
                     </div>
                   </div>
@@ -789,7 +988,7 @@ function App() {
 
                   <div className="space-y-2">
                     <label className="text-sm font-medium text-slate-300 ml-1">Temporizador de Sesión (Segundos)</label>
-                    <div className="bg-slate-950 border border-slate-800 rounded-xl flex items-center px-4 focus-within:border-amber-500 transition-colors w-1/2">
+                    <div className="bg-slate-950 border border-slate-800 rounded-xl flex items-center px-4 focus-within:border-amber-500 transition-colors w-full sm:w-1/2">
                       <input 
                         type="number" 
                         value={wakeTimeout}
@@ -1385,49 +1584,59 @@ function App() {
                   </button>
                 </div>
 
-                <h3 className="font-semibold text-lg text-slate-200 mb-4 border-b border-slate-800 pb-2">Estado de APIs</h3>
+                <div className="flex items-center justify-between mb-4 border-b border-slate-800 pb-2">
+                  <h3 className="font-semibold text-lg text-slate-200">Estado de APIs</h3>
+                  <button 
+                    onClick={() => setShowCredentialsModal(true)}
+                    className="text-xs bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-300 px-3 py-1.5 rounded-lg flex items-center gap-1.5 transition-colors"
+                  >
+                    <Key size={14} /> Reconfigurar Llaves
+                  </button>
+                </div>
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-8">
                   {/* OpenAI */}
-                  <div className="bg-slate-950 p-5 rounded-xl border border-slate-800 flex flex-col items-center text-center">
-                    <h4 className="font-semibold text-slate-300 mb-2">OpenAI</h4>
-                    {providersStatus?.openai?.status === 'ok' ? (
-                      <span className="text-emerald-400 font-medium">Conectado (API Key Válida)</span>
-                    ) : providersStatus?.openai?.status === 'missing_key' ? (
-                      <span className="text-slate-500">No Configurado</span>
-                    ) : (
-                      <span className="text-red-400 font-medium">Error: {providersStatus?.openai?.status}</span>
-                    )}
-                  </div>
+                  {(!credentialsStatus || credentialsStatus.llm_provider === 'openai') && (
+                    <div className="bg-slate-950 p-5 rounded-xl border border-slate-800 flex flex-col items-center text-center">
+                      <h4 className="font-semibold text-slate-300 mb-2">OpenAI</h4>
+                      {providersStatus?.openai?.status === 'ok' ? (
+                        <span className="text-emerald-400 font-medium">Conectado (API Key Válida)</span>
+                      ) : providersStatus?.openai?.status === 'missing_key' ? (
+                        <span className="text-slate-500">No Configurado</span>
+                      ) : (
+                        <span className="text-red-400 font-medium">Error: {providersStatus?.openai?.status}</span>
+                      )}
+                    </div>
+                  )}
                   {/* Gemini */}
-                  <div className="bg-slate-950 p-5 rounded-xl border border-slate-800 flex flex-col items-center text-center">
-                    <h4 className="font-semibold text-slate-300 mb-2">Google Gemini</h4>
-                    {providersStatus?.gemini?.status === 'ok' ? (
-                      <span className="text-emerald-400 font-medium">Conectado (API Key Válida)</span>
-                    ) : providersStatus?.gemini?.status === 'missing_key' ? (
-                      <span className="text-slate-500">No Configurado</span>
-                    ) : (
-                      <span className="text-red-400 font-medium">Error: {providersStatus?.gemini?.status}</span>
-                    )}
-                  </div>
+                  {(!credentialsStatus || credentialsStatus.llm_provider === 'gemini') && (
+                    <div className="bg-slate-950 p-5 rounded-xl border border-slate-800 flex flex-col items-center text-center">
+                      <h4 className="font-semibold text-slate-300 mb-2">Google Gemini</h4>
+                      {providersStatus?.gemini?.status === 'ok' ? (
+                        <span className="text-emerald-400 font-medium">Conectado (API Key Válida)</span>
+                      ) : providersStatus?.gemini?.status === 'missing_key' ? (
+                        <span className="text-slate-500">No Configurado</span>
+                      ) : (
+                        <span className="text-red-400 font-medium">Error: {providersStatus?.gemini?.status}</span>
+                      )}
+                    </div>
+                  )}
                   {/* ElevenLabs */}
-                  <div className="bg-slate-950 p-5 rounded-xl border border-slate-800 flex flex-col items-center text-center">
-                    <h4 className="font-semibold text-slate-300 mb-2">ElevenLabs</h4>
-                    {providersStatus?.elevenlabs?.status === 'ok' ? (
-                      <div className="flex flex-col items-center">
-                        <span className="text-emerald-400 font-medium mb-1">Conectado ({providersStatus.elevenlabs.status_tier})</span>
-                        <div className="text-xs text-slate-400">
-                          {providersStatus.elevenlabs.character_count?.toLocaleString()} / {providersStatus.elevenlabs.character_limit?.toLocaleString()} chars
-                        </div>
-                        <div className="w-full bg-slate-800 rounded-full h-1.5 mt-2">
-                          <div className="bg-emerald-500 h-1.5 rounded-full" style={{width: `${Math.min(100, (providersStatus.elevenlabs.character_count / providersStatus.elevenlabs.character_limit)*100)}%`}}></div>
-                        </div>
-                      </div>
-                    ) : providersStatus?.elevenlabs?.status === 'missing_key' ? (
-                      <span className="text-slate-500">No Configurado</span>
-                    ) : (
-                      <span className="text-red-400 font-medium">Error de Conexión</span>
-                    )}
-                  </div>
+                  {(!credentialsStatus || credentialsStatus.stt_provider === 'elevenlabs' || credentialsStatus.tts_provider === 'elevenlabs') && (
+                    <div className="bg-slate-950 p-5 rounded-xl border border-slate-800 flex flex-col items-center text-center">
+                      <h4 className="font-semibold text-slate-300 mb-2">ElevenLabs</h4>
+                      {providersStatus?.elevenlabs?.status === 'ok' ? (
+                        <span className="text-emerald-400 font-medium">Conectado ({providersStatus.elevenlabs.status_tier})</span>
+                      ) : providersStatus?.elevenlabs?.status === 'missing_key' ? (
+                        <span className="text-slate-500">No Configurado</span>
+                      ) : providersStatus?.elevenlabs?.status === 'invalid_key' ? (
+                        <span className="text-red-400 font-medium">Llave de API Inválida (401)</span>
+                      ) : (
+                        <span className="text-red-400 font-medium">
+                          Error de Conexión {providersStatus?.elevenlabs?.code ? `(${providersStatus.elevenlabs.code})` : ''}
+                        </span>
+                      )}
+                    </div>
+                  )}
                 </div>
 
                 <h3 className="font-semibold text-lg text-slate-200 mb-4 border-b border-slate-800 pb-2">Configuración de Costos ($ USD por 1 Millón)</h3>
@@ -1497,6 +1706,13 @@ function App() {
                             <div>
                               <span className="text-sm text-slate-300 group-hover:text-white transition-colors block">Credenciales y Puertos</span>
                               <span className="text-[10px] text-slate-500">archivo .env (Requiere reinicio al importar)</span>
+                            </div>
+                          </label>
+                          <label className="flex items-center gap-3 cursor-pointer group">
+                            <input type="checkbox" checked={exportIncludeCredentials} onChange={e => setExportIncludeCredentials(e.target.checked)} className="w-4 h-4 rounded border-slate-700 bg-slate-800 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-slate-900" />
+                            <div>
+                              <span className="text-sm text-slate-300 group-hover:text-white transition-colors block">Credenciales Seguras (Recomendado)</span>
+                              <span className="text-[10px] text-slate-500">Llaves de APIs introducidas desde el Dashboard</span>
                             </div>
                           </label>
                           <label className="flex items-center gap-3 cursor-pointer group">

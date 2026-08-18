@@ -14,6 +14,7 @@ Por favor, consulta los siguientes documentos en la carpeta `docs/` para aprende
    - Comandos para ejecutar en desarrollo o en producción (PM2).
 
 2. **[Guía del Dashboard y Respaldo](docs/2_guia_dashboard.md)**
+   - Interfaz web responsiva con autodescubrimiento de red (ideal para visualización móvil).
    - Explicación de los paneles de telemetría.
    - Configuración de personalidad y Wakeword.
    - Catálogo de Voces y Clonación ElevenLabs.
@@ -22,7 +23,8 @@ Por favor, consulta los siguientes documentos en la carpeta `docs/` para aprende
 
 3. **[Arquitectura y Desarrollo](docs/3_arquitectura_y_desarrollo.md)**
    - Diagrama de flujo completo (Mermaid).
-   - Explicación del Motor Monolítico.
+   - Explicación del Motor Monolítico (Zero-Internal Latency).
+   - Soporte Multi-STT (Faster-Whisper Local + ElevenLabs Scribe Cloud).
    - Notas clave para desarrolladores.
 
 4. **[Integraciones y Hardware](docs/4_integraciones_y_hardware.md)**

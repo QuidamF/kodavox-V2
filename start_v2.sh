@@ -4,6 +4,94 @@ echo "=================================================="
 echo "   Iniciando KodaVox V2 (Active Speech)           "
 echo "=================================================="
 
+# Helper function for progress spinner
+show_spinner() {
+    local pid=$1
+    local delay=0.25
+    local spinstr='|/-\'
+    while kill -0 "$pid" 2>/dev/null; do
+        local temp=${spinstr#?}
+        printf " [%c]  " "$spinstr"
+        local spinstr=$temp${spinstr%"$temp"}
+        sleep $delay
+        printf "\b\b\b\b\b\b"
+    done
+    printf "    \b\b\b\b"
+}
+
+if [ ! -f ".env" ]; then
+    echo "=================================================="
+    echo " 🛠️ Asistente de Configuración Inicial KodaVox V2 "
+    echo "=================================================="
+    echo "No se encontró el archivo .env."
+    echo -n "¿Deseas ejecutar el asistente para crearlo automáticamente? (s/N): "
+    read -r resp
+    if [[ "$resp" =~ ^[Ss] ]]; then
+        cp .env.example .env
+        echo ""
+        echo "¿Qué tipo de instalación deseas?"
+        echo "1) Full (Local): Requiere más RAM/GPU. Todo corre en tu máquina (Ollama, Whisper, Piper)."
+        echo "2) Minimal (Nube): Muy rápido, requiere bajo hardware. Usa APIs externas (Gemini, ElevenLabs)."
+        echo "3) Personalizado: Preguntar módulo por módulo."
+        echo -n "Selecciona una opción (1/2/3) [3]: "
+        read -r install_type
+        
+        if [ "$install_type" = "1" ]; then
+            sed -i 's/^LLM_PROVIDER=.*/LLM_PROVIDER=ollama/' .env
+            sed -i 's/^STT_PROVIDER=.*/STT_PROVIDER=whisper/' .env
+            sed -i 's/^TTS_PROVIDER=.*/TTS_PROVIDER=piper/' .env
+            echo "   -> Perfil Full (Local) aplicado."
+        elif [ "$install_type" = "2" ]; then
+            sed -i 's/^LLM_PROVIDER=.*/LLM_PROVIDER=gemini/' .env
+            sed -i 's/^STT_PROVIDER=.*/STT_PROVIDER=elevenlabs/' .env
+            sed -i 's/^TTS_PROVIDER=.*/TTS_PROVIDER=elevenlabs/' .env
+            echo "   -> Perfil Minimal (Nube) aplicado."
+        else
+            echo ""
+            echo "--- LLM (Cerebro) ---"
+            echo "1) Local (Ollama)  2) Cloud (OpenAI)  3) Cloud (Gemini)"
+            echo -n "Selección [1]: "
+            read -r llm_choice
+            case $llm_choice in
+                2) sed -i 's/^LLM_PROVIDER=.*/LLM_PROVIDER=openai/' .env ;;
+                3) sed -i 's/^LLM_PROVIDER=.*/LLM_PROVIDER=gemini/' .env ;;
+                *) sed -i 's/^LLM_PROVIDER=.*/LLM_PROVIDER=ollama/' .env ;;
+            esac
+            
+            echo ""
+            echo "--- STT (Oído) ---"
+            echo "1) Local (Whisper)  2) Cloud (ElevenLabs Scribe)"
+            echo -n "Selección [1]: "
+            read -r stt_choice
+            case $stt_choice in
+                2) sed -i 's/^STT_PROVIDER=.*/STT_PROVIDER=elevenlabs/' .env ;;
+                *) sed -i 's/^STT_PROVIDER=.*/STT_PROVIDER=whisper/' .env ;;
+            esac
+            
+            echo ""
+            echo "--- TTS (Voz) ---"
+            echo "1) Local (Piper - Muy Rápido)  2) Docker (XTTS - Clonación Avanzada)  3) Cloud (ElevenLabs)  4) Apagado"
+            echo -n "Selección [1]: "
+            read -r tts_choice
+            case $tts_choice in
+                2) sed -i 's/^TTS_PROVIDER=.*/TTS_PROVIDER=xtts/' .env ;;
+                3) sed -i 's/^TTS_PROVIDER=.*/TTS_PROVIDER=elevenlabs/' .env ;;
+                4) sed -i 's/^TTS_PROVIDER=.*/TTS_PROVIDER=off/' .env ;;
+                *) sed -i 's/^TTS_PROVIDER=.*/TTS_PROVIDER=piper/' .env ;;
+            esac
+            echo "   -> Perfil Personalizado aplicado."
+        fi
+        echo "=================================================="
+        echo "¡Archivo .env generado con éxito!"
+        echo "Por favor, recuerda agregar tus API Keys en el archivo .env si elegiste proveedores en la Nube."
+        echo "Iniciando sistema con la configuración elegida..."
+        echo "=================================================="
+    else
+        echo "Por favor, crea tu archivo .env manualmente a partir de .env.example."
+        exit 1
+    fi
+fi
+
 # El motor se ejecuta directamente desde este script, por lo que exportamos la
 # configuración común que Docker Compose también lee desde .env.
 if [ -f ".env" ]; then
@@ -103,6 +191,25 @@ fi
 
 # 2. Configurar Entorno Python e Iniciar Motor Monolítico
 ENGINE_PORT="${ENGINE_PORT:-5000}"
+ORIGINAL_PORT=$ENGINE_PORT
+
+echo "[2/4] Verificando disponibilidad del puerto..."
+while (echo > /dev/tcp/127.0.0.1/$ENGINE_PORT) >/dev/null 2>&1; do
+    echo "   -> Puerto $ENGINE_PORT ocupado, intentando con $((ENGINE_PORT+1))..."
+    ENGINE_PORT=$((ENGINE_PORT+1))
+done
+
+if [ "$ENGINE_PORT" -ne "$ORIGINAL_PORT" ]; then
+    echo "   -> Puerto libre encontrado: $ENGINE_PORT. Guardando en .env..."
+    if [ -f ".env" ]; then
+        if grep -q "^ENGINE_PORT=" .env; then
+            sed -i "s/^ENGINE_PORT=.*/ENGINE_PORT=$ENGINE_PORT/" .env
+        else
+            echo "ENGINE_PORT=$ENGINE_PORT" >> .env
+        fi
+    fi
+fi
+
 export VITE_ENGINE_PORT="$ENGINE_PORT"
 echo "[2/4] Configurando Motor Monolítico..."
 cd orchestrator
@@ -111,33 +218,64 @@ if [ ! -d "venv" ]; then
     python3 -m venv venv
 fi
 source venv/bin/activate
-pip install -q -r requirements.txt
+    if [ ! -f ".requirements.md5" ] || ! md5sum -c .requirements.md5 &>/dev/null; then
+        echo -n "   -> Instalando/Verificando dependencias de Python (esto puede tomar varios minutos)"
+        pip install -q -r requirements.txt &
+        show_spinner $!
+        md5sum requirements.txt > .requirements.md5
+        echo " ¡Listo!"
+    fi
 
 echo "[3/4] Iniciando main.py (Modular Core) en el puerto $ENGINE_PORT..."
 # Corremos el motor mostrando salida en tiempo real
-python main.py 2>&1 | tee engine.log &
+python main.py > >(tee engine.log) 2>&1 &
 ENGINE_PID=$!
 cd ..
 
 # 3. Configurar e Iniciar Dashboard Vite
 echo "[4/4] Configurando Dashboard..."
 cd dashboard-v2
-if ! command -v npm &> /dev/null; then
-    echo "   -> ❌ ERROR: No se encontró 'npm' o Node.js en tu sistema."
-    echo "   -> Aunque el motor puede correr de forma 'Headless', el Dashboard es estrictamente necesario para configurar al Agente KodaVox (RAG, Voces, etc)."
-    echo "   -> Por favor, instala Node.js y npm, y vuelve a ejecutar este script."
-    # Matar el motor que ya habíamos levantado en el paso anterior
-    kill $ENGINE_PID 2>/dev/null
-    exit 1
-else
+    install_node() {
+        echo -n "   -> ¿Deseas instalar/actualizar Node.js (v20) automáticamente ahora? (s/N): "
+        read -r resp
+        if [[ "$resp" =~ ^[Ss] ]]; then
+            if command -v apt-get &> /dev/null && command -v curl &> /dev/null; then
+                echo "   -> Descargando script de NodeSource (Node 20)..."
+                curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+                sudo apt-get install -y nodejs
+                echo "   -> Instalación completada: $(node -v)"
+            else
+                echo "   -> ❌ ERROR: No se puede instalar automáticamente en este sistema (se requiere apt y curl)."
+                echo "   -> Por favor, instala Node.js >= 18 manualmente."
+                kill $ENGINE_PID 2>/dev/null
+                exit 1
+            fi
+        else
+            echo "   -> Operación cancelada. Por favor instala Node.js >= 18 manualmente."
+            kill $ENGINE_PID 2>/dev/null
+            exit 1
+        fi
+    }
+
+    if ! command -v npm &> /dev/null || ! command -v node &> /dev/null; then
+        echo "   -> ❌ ERROR: No se encontró 'npm' o Node.js en tu sistema."
+        install_node
+    else
+        NODE_VERSION=$(node -v | cut -d 'v' -f 2 | cut -d '.' -f 1)
+        if [ "$NODE_VERSION" -lt 18 ]; then
+            echo "   -> ❌ ERROR: La versión de Node.js instalada ($(node -v)) es muy antigua (se requiere >= 18)."
+            install_node
+        fi
+    fi
     if [ ! -d "node_modules" ]; then
-        echo "   -> Instalando dependencias de Node.js..."
-        npm install
+        echo -n "   -> Instalando dependencias de Node.js (esto puede tomar un momento)"
+        npm install --silent &
+        show_spinner $!
+        echo " ¡Listo!"
     fi
     echo "   -> Iniciando Vite Server..."
     npm run dev &
     VITE_PID=$!
-fi
 cd ..
 
 echo ""

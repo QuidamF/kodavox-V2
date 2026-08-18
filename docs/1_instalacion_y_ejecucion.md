@@ -21,7 +21,7 @@ Antes de ejecutar el sistema, asegúrate de validar los siguientes puntos:
 
 1. **Configuración del Entorno (.env):**
    - Copia el archivo `.env.example` a `.env`: `cp .env.example .env`
-   - Configura los proveedores que vayas a usar. Si usas modelos de pago (OpenAI, Gemini, ElevenLabs), asegúrate de colocar tus **API Keys**.
+   - Nota: **Ya no es estrictamente necesario** colocar contraseñas ni API Keys (OpenAI, Gemini, ElevenLabs) directamente en el `.env`. El sistema ahora cuenta con un gestor seguro (`credentials.json`) y te las pedirá visualmente al abrir el Dashboard por primera vez.
 2. **Requisitos de Software:**
    - **Python 3.10+**: Necesario para el motor backend (y el paquete `venv` para entornos virtuales).
    - **Node.js y npm**: Necesarios para poder instalar y ejecutar el Dashboard V2.

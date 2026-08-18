@@ -13,6 +13,29 @@ from core.config import TTS_PROVIDER
 
 router = APIRouter()
 
+# --- Rutas Credenciales Seguras ---
+
+@router.get("/api/config/credentials/status")
+async def get_credentials_status():
+    from main import pipeline
+    from core.config import TTS_PROVIDER
+    return {
+        "OPENAI_API_KEY": bool(os.getenv("OPENAI_API_KEY")),
+        "GEMINI_API_KEY": bool(os.getenv("GEMINI_API_KEY")),
+        "ELEVENLABS_API_KEY": bool(os.getenv("ELEVENLABS_API_KEY")),
+        "llm_provider": getattr(pipeline, 'llm_provider_name', os.getenv('LLM_PROVIDER', 'ollama')),
+        "stt_provider": getattr(pipeline, 'stt_provider', os.getenv('STT_PROVIDER', 'whisper')),
+        "tts_provider": TTS_PROVIDER
+    }
+
+@router.post("/api/config/credentials")
+async def update_credentials(payload: dict = Body(...)):
+    from api.credentials import save_credentials
+    save_credentials(payload)
+    # Al cambiar llaves maestras, reiniciamos el motor para que todos los servicios las tomen
+    asyncio.create_task(restart_server_task())
+    return {"message": "Credenciales guardadas exitosamente", "needs_restart": True}
+
 # --- Rutas RAG ---
 
 @router.get("/api/rag/collections")
@@ -220,7 +243,8 @@ async def get_hardware():
     from main import pipeline
     return {
         "native_audio_output": getattr(pipeline, 'native_audio_output', True),
-        "robot_face_sync": getattr(pipeline, 'robot_face_sync', False)
+        "robot_face_sync": getattr(pipeline, 'robot_face_sync', False),
+        "cost_rates": getattr(pipeline, 'cost_rates', {"openai": 0.15, "gemini": 0.0, "elevenlabs": 15.0})
     }
 
 @router.post("/api/config/hardware")
@@ -230,9 +254,11 @@ async def set_hardware(payload: dict = Body(...)):
         pipeline.native_audio_output = payload["native_audio_output"]
     if "robot_face_sync" in payload:
         pipeline.robot_face_sync = payload["robot_face_sync"]
+    if "cost_rates" in payload:
+        pipeline.cost_rates = payload["cost_rates"]
         
     pipeline._save_engine_state()
-    return {"message": "Configuración de hardware actualizada exitosamente"}
+    return {"message": "Configuración actualizada exitosamente"}
 
 @router.post("/api/tts/test")
 async def test_tts(payload: dict = Body(...)):
@@ -272,36 +298,53 @@ async def get_usage():
 
 @router.get("/api/diagnostics/providers")
 async def get_providers_status():
+    from main import pipeline
+    from core.config import TTS_PROVIDER
+    
+    active_llm = getattr(pipeline, 'llm_provider_name', os.getenv('LLM_PROVIDER', 'ollama'))
+    active_stt = getattr(pipeline, 'stt_provider', os.getenv('STT_PROVIDER', 'whisper'))
+    active_tts = TTS_PROVIDER
+
     status = {
-        "elevenlabs": {"status": "unknown", "details": None},
-        "openai": {"status": "unknown"},
-        "gemini": {"status": "unknown"}
+        "elevenlabs": {"status": "inactive", "details": None},
+        "openai": {"status": "inactive"},
+        "gemini": {"status": "inactive"}
     }
-    el_key = os.getenv("ELEVENLABS_API_KEY")
+    
+    if active_stt == 'elevenlabs' or active_tts == 'elevenlabs':
+        el_key = os.getenv("ELEVENLABS_API_KEY")
     if el_key:
         try:
             async with httpx.AsyncClient() as client:
                 res = await client.get(
-                    "https://api.elevenlabs.io/v1/user/subscription",
+                    "https://api.elevenlabs.io/v1/models",
                     headers={"xi-api-key": el_key},
                     timeout=5.0
                 )
                 if res.status_code == 200:
-                    data = res.json()
                     status["elevenlabs"] = {
                         "status": "ok",
-                        "character_count": data.get("character_count"),
-                        "character_limit": data.get("character_limit"),
-                        "status_tier": data.get("status")
+                        "status_tier": "API Key Válida"
                     }
+                elif res.status_code == 401:
+                    try:
+                        error_data = res.json()
+                        detail = error_data.get("detail", {})
+                        if detail.get("status") == "invalid_api_key":
+                            status["elevenlabs"] = {"status": "invalid_key", "code": 401}
+                        else:
+                            status["elevenlabs"] = {"status": "ok", "status_tier": "API Key Válida (Scoped)"}
+                    except:
+                        status["elevenlabs"] = {"status": "invalid_key", "code": 401}
                 else:
                     status["elevenlabs"] = {"status": "error", "code": res.status_code}
         except Exception as e:
             status["elevenlabs"] = {"status": "error", "message": str(e)}
-    else:
+    elif active_stt == 'elevenlabs' or active_tts == 'elevenlabs':
         status["elevenlabs"] = {"status": "missing_key"}
 
-    oa_key = os.getenv("OPENAI_API_KEY")
+    if active_llm == 'openai':
+        oa_key = os.getenv("OPENAI_API_KEY")
     if oa_key:
         try:
             async with httpx.AsyncClient() as client:
@@ -313,22 +356,23 @@ async def get_providers_status():
                 status["openai"] = {"status": "ok" if res.status_code == 200 else f"error_{res.status_code}"}
         except Exception as e:
             status["openai"] = {"status": "error", "message": str(e)}
-    else:
+    elif active_llm == 'openai':
         status["openai"] = {"status": "missing_key"}
 
-    gem_key = os.getenv("GEMINI_API_KEY")
-    if gem_key:
-        try:
-            async with httpx.AsyncClient() as client:
-                res = await client.get(
-                    f"https://generativelanguage.googleapis.com/v1beta/models?key={gem_key}",
-                    timeout=5.0
-                )
-                status["gemini"] = {"status": "ok" if res.status_code == 200 else f"error_{res.status_code}"}
-        except Exception as e:
-            status["gemini"] = {"status": "error", "message": str(e)}
-    else:
-        status["gemini"] = {"status": "missing_key"}
+    if active_llm == 'gemini':
+        gem_key = os.getenv("GEMINI_API_KEY")
+        if gem_key:
+            try:
+                async with httpx.AsyncClient() as client:
+                    res = await client.get(
+                        f"https://generativelanguage.googleapis.com/v1beta/models?key={gem_key}",
+                        timeout=5.0
+                    )
+                    status["gemini"] = {"status": "ok" if res.status_code == 200 else f"error_{res.status_code}"}
+            except Exception as e:
+                status["gemini"] = {"status": "error", "message": str(e)}
+        else:
+            status["gemini"] = {"status": "missing_key"}
         
     return status
 
@@ -336,10 +380,12 @@ async def get_providers_status():
 async def export_config(payload: dict = Body(...)):
     include_env = payload.get("include_env", False)
     include_rag = payload.get("include_rag", False)
+    include_credentials = payload.get("include_credentials", True)
     
     project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     state_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "engine_state.json")
     env_path = os.path.join(project_root, ".env")
+    creds_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "credentials.json")
     chroma_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "chroma_db")
     
     temp_dir = tempfile.mkdtemp()
@@ -350,6 +396,7 @@ async def export_config(payload: dict = Body(...)):
             "has_state": True,
             "has_env": include_env,
             "has_rag": include_rag,
+            "has_credentials": include_credentials and os.path.exists(creds_path),
             "version": "2.0"
         }
         zipf.writestr("manifest.json", json.dumps(manifest))
@@ -357,6 +404,8 @@ async def export_config(payload: dict = Body(...)):
             zipf.write(state_path, "engine_state.json")
         if include_env and os.path.exists(env_path):
             zipf.write(env_path, ".env")
+        if include_credentials and os.path.exists(creds_path):
+            zipf.write(creds_path, "credentials.json")
         if include_rag and os.path.exists(chroma_path):
             for root, _, files in os.walk(chroma_path):
                 for file in files:
@@ -415,6 +464,14 @@ async def import_config(file: UploadFile = File(...)):
             env_dest = os.path.join(project_root, ".env")
             if os.path.exists(env_src):
                 shutil.copy2(env_src, env_dest)
+                needs_restart = True
+
+        if manifest.get("has_credentials"):
+            creds_src = os.path.join(extract_dir, "credentials.json")
+            creds_dest = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "credentials.json")
+            if os.path.exists(creds_src):
+                os.makedirs(os.path.dirname(creds_dest), exist_ok=True)
+                shutil.copy2(creds_src, creds_dest)
                 needs_restart = True
                 
         if manifest.get("has_rag"):

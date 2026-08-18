@@ -7,6 +7,8 @@ KodaVox V2 está diseñado alrededor de un **Motor Monolítico en Memoria** para
 ## 🚀 Nuevas Funciones y Arquitectura (V2.1)
 - **Latencia Zero-Internal**: VAD y STT ahora corren en el mismo proceso de Python, eliminando saltos de red.
 - **Barge-in Nativo**: El sistema detecta interrupciones de forma instantánea mediante Silero VAD local.
+- **Seguridad de Credenciales**: Las llaves de API (OpenAI, Gemini, ElevenLabs) están extraídas del `.env` por defecto y se inyectan en tiempo de ejecución desde `credentials.json` (protegido e ignorado en Git).
+- **Monitoreo Inteligente**: Las rutinas de diagnóstico y Health Check de las APIs se ejecutan de manera dinámica; el motor solo hace ping a las nubes (ahorrando consumo de red) de aquellos proveedores seleccionados en la configuración.
 - **RAG y WakeWord nativos**: Se reintegraron en el core monolítico con soporte dinámico.
 - **Motor Headless (Socket.IO)**: Telemetría en tiempo real y transmisión de audio crudo por WebSocket.
 
@@ -16,8 +18,11 @@ KodaVox V2 está diseñado alrededor de un **Motor Monolítico en Memoria** para
 graph TD
     subgraph KodaVox Monolithic Engine
         A["Microphone (PyAudio)"] --> B["Silero VAD (CPU)"]
-        B -- "Speech Detected" --> C["Faster-Whisper STT (GPU)"]
-        C -- "Text Transcript" --> D{"Interaction Mode"}
+        B -- "Speech Detected" --> C{"STT Provider"}
+        C --> C1("Faster-Whisper (Local)")
+        C --> C2("ElevenLabs Scribe (Cloud)")
+        C1 -- "Text Transcript" --> D{"Interaction Mode"}
+        C2 -- "Text Transcript" --> D
         D -- "Active / WakeWord" --> E["RAG ChromaDB"]
         E -- "Context + Prompt" --> F["LLM Provider"]
     end
@@ -43,7 +48,8 @@ graph TD
         
         %% WebSockets / Telemetría
         B -. "VAD Status" .-> M["Dashboard V2 (Vite)"]
-        C -. "Transcripts" .-> M
+        C1 -. "Transcripts" .-> M
+        C2 -. "Transcripts" .-> M
         F -. "LLM Tokens" .-> M
         G -. "TTS Status" .-> M
         
@@ -55,7 +61,9 @@ graph TD
 ### Componentes Principales
 
 1. **VAD (Voice Activity Detection)**: Utiliza **Silero VAD** corriendo en la CPU. Evalúa ventanas de audio muy pequeñas (~32ms) para detectar con precisión cuándo el usuario empieza a hablar (Barge-in) y cuándo termina.
-2. **STT (Speech-to-Text)**: Implementado con **Faster-Whisper**. En hardware compatible (NVIDIA), corre en la GPU usando cuantización `int8_float16` para máxima velocidad. **Si no cuentas con GPU**, el sistema lo detectará automáticamente y ejecutará el modelo en la CPU utilizando cuantización `int8`, lo que permite un rendimiento aceptable en procesadores modernos sin necesidad de configuración adicional.
+2. **STT (Speech-to-Text)**: Arquitectura multi-proveedor gestionada por la variable `STT_PROVIDER`.
+   - **Faster-Whisper (Local)**: En hardware compatible (NVIDIA), corre en la GPU usando cuantización `int8_float16` para máxima velocidad. **Si no cuentas con GPU**, se ejecuta en la CPU utilizando cuantización `int8`.
+   - **ElevenLabs Scribe (Cloud)**: Integración nativa con la API de ElevenLabs para transcripciones ultrarrápidas y precisas en la nube.
 3. **Manejador de Contexto (RAG)**: Integrado nativamente con **ChromaDB**. Antes de consultar al LLM, el texto es inyectado con contexto relevante extraído de los documentos cargados.
 4. **Proveedores LLM**: Arquitectura agnóstica mediante un patrón de fábrica (`LLMFactory`). Soporta Ollama para despliegues 100% privados y locales, o OpenAI/Gemini para mayor capacidad de razonamiento.
 5. **Proveedores TTS**: 
@@ -68,7 +76,8 @@ graph TD
 
 ## 👥 Notas de Desarrollo
 - El motor se comunica con **Ollama** en `http://127.0.0.1:11434`. Asegúrate de tener Ollama corriendo localmente con el modelo configurado (por defecto `qwen2.5:3b`).
-- La configuración principal reside en el archivo `.env` en la raíz.
+- La configuración de variables no-sensibles reside en el archivo `.env`.
+- La configuración de seguridad y secretos reside en `orchestrator/data/credentials.json`. Si exportas la configuración vía ZIP, asegúrate de activar la opción de exportar credenciales para mantener el comportamiento intacto.
 - **Descargas la Primera Vez:** Cuando cambies la variable `STT_MODEL` (ej. a `tiny` o `medium`), el sistema descargará el modelo de Internet la primera vez que se ejecute. Esto puede tomar varios minutos sin mostrar una barra de progreso; no cierres el programa.
 - La voz de XTTS se conserva en la configuración persistente del servicio, para reutilizar sus latentes. Para forzar otra voz al iniciar, define `TTS_CONFIGURE_VOICE_ON_START=true` y `VOICE_SAMPLE=<archivo.wav>` en `.env`.
 - Puedes seleccionar `TTS_PROVIDER=xtts`, `TTS_PROVIDER=piper` u `off`. Piper usa por defecto `models/es_MX-claude-high.onnx`, no requiere GPU ni clonación y admite ajustar la velocidad con `PIPER_LENGTH_SCALE`.

@@ -3,9 +3,17 @@
 # 📊 Interfaz de Usuario y Configuración (Dashboard V2)
 
 Una vez iniciado el sistema, abre tu navegador en:
-👉 **http://localhost:5173** (o el puerto consecutivo si está ocupado)
+👉 **http://localhost:5173** (o el puerto consecutivo si está ocupado).
+
+> [!TIP]
+> **Acceso Remoto y Móvil:** El Dashboard cuenta con un diseño totalmente **responsivo**, lo que significa que puedes abrir la interfaz cómodamente desde tu teléfono o tablet. Además, gracias a su sistema de **autodescubrimiento de red**, si accedes usando la IP local de la computadora host (ej. `http://192.168.1.50:5173`), el dashboard detectará automáticamente esta IP para conectarse al Motor Core y al WebSocket sin necesidad de configuraciones adicionales.
 
 El Dashboard consta de un menú lateral que te permite monitorizar el estado en tiempo real y configurar el comportamiento del agente "al vuelo", sin necesidad de reiniciar el servidor. Aquí tienes una guía de uso para cada sección:
+
+### 0. Asistente de Configuración (Setup Wizard)
+Al abrir el Dashboard por primera vez (o en una máquina nueva), si configuraste KodaVox para usar proveedores en la nube (como OpenAI o ElevenLabs), una pantalla de cristal bloqueante te pedirá ingresar tus **API Keys**.
+- **Seguridad**: Estas llaves se guardan en un archivo `credentials.json` encriptado e ignorado por Git, separándolas de tu archivo `.env` por seguridad.
+- **Importación Directa**: Si ya tenías KodaVox en otro dispositivo, el Asistente de Configuración tiene un botón de *"¿Tienes un Respaldo?"* donde puedes subir tu archivo `.zip` y saltarte toda la configuración manual.
 
 ### 1. Monitoreo (Home)
 Esta es la pantalla principal para observar qué está "pensando" el motor.
@@ -56,6 +64,8 @@ Permite inyectar información contextual a largo plazo para que el LLM responda 
 ### 6. Diagnósticos y Proveedores
 - **Diagnósticos**: Muestra semáforos (OK/Falla) para los módulos internos de hardware (VAD, Whisper, Base de Datos). Aquí también puedes usar los *Toggles* (interruptores) para apagar la salida física de audio, o bien, encender la **Sincronización de Estados con Robot Face**.
 - **Proveedores**: Define tus costos por "Millón de tokens/caracteres" para monitorear cuánto dinero real has consumido en el día usando las APIs en la nube.
+  - **Interfaz Limpia**: Esta pantalla es inteligente; solo te mostrará las tarjetas de monitoreo y errores de las APIs que realmente estás usando en tu configuración actual.
+  - **Reconfigurar Llaves**: Encontrarás un botón arriba a la derecha de *"🔑 Reconfigurar Llaves"* para invocar de nuevo el Asistente de Configuración si alguna vez necesitas cambiar tus contraseñas o cuentas.
 
 ---
 
@@ -64,9 +74,10 @@ En la sección de Diagnósticos puedes empaquetar toda la "mente" de KodaVox en 
 
 1. **Elige qué exportar**:
    - `Ajustes y Personalidad` (Siempre incluido)
-   - `Credenciales (.env)`: Exporta tus contraseñas y llaves de API. (Opcional)
+   - `Credenciales Seguras`: Exporta tu archivo local `credentials.json` con tus llaves de API dentro del ZIP para clonar el sistema intacto. (Recomendado)
+   - `Credenciales (.env)`: Exporta tu configuración del `.env` viejo si aún dependes de él.
    - `Base de Conocimiento (RAG)`: Exporta la carpeta `chroma_db` entera. (Opcional)
-2. **Importación y Reinicio Automático**: Al importar un perfil ZIP en otro robot, si dicho paquete contiene un archivo `.env`, el dashboard te avisará y el sistema se reiniciará automáticamente para aplicar las nuevas llaves maestras sin necesidad de tocar la terminal.
+2. **Importación y Reinicio Automático**: Al importar un perfil ZIP en otro robot (sea desde la pestaña Exportar o directamente desde el **Setup Wizard** inicial), el sistema desempaquetará las llaves maestras, la memoria, y los perfiles de costos, reiniciándose automáticamente sin necesidad de tocar la terminal.
 
 ## 💰 Sistema de Costos
-El motor guarda diariamente los consumos en `orchestrator/data/usage_stats.json`. En la pestaña de **Proveedores** del Dashboard puedes configurar cuánto pagas por Millón de tokens/caracteres, y KodaVox calculará tu gasto del día en tiempo real.
+El motor guarda diariamente los consumos en `orchestrator/data/usage_stats.json`. En la pestaña de **Proveedores** del Dashboard puedes configurar cuánto pagas por Millón de tokens/caracteres, y KodaVox calculará tu gasto del día en tiempo real. Esta configuración de costos también se incluye automáticamente cuando exportas tu perfil.

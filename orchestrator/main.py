@@ -6,6 +6,9 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 
+from api.credentials import load_credentials
+load_credentials()
+
 from core.pipeline import EnginePipeline
 from api.routes import router
 
