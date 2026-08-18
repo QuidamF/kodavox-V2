@@ -576,13 +576,13 @@ class MonolithicEngine:
         final_assistant_text = "".join(full_response_buffer)
         self.conversation_history.append({"role": "assistant", "content": final_assistant_text})
 
-        # Guardar en Redis Cache para consultas futuras si no fue RAG dinámico
-        if final_assistant_text.strip() and not self.active_rag_collection:
+        # Guardar en Redis Cache para consultas futuras
+        if final_assistant_text.strip():
             try:
                 from services.redis_cache import redis_cache
                 redis_cache.set(text, final_assistant_text)
             except Exception as cache_err:
-                print(f"[Redis Cache Store Error] {cache_err}")
+                print(f"[Redis Cache Store Error] {cache_err}", flush=True)
 
         # Esperamos medio segundo extra antes de "encender" el micrófono
         # para que cualquier eco en la habitación termine de disiparse.
