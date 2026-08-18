@@ -23,7 +23,7 @@ class RedisCacheService:
                 port=self.port,
                 db=self.db,
                 socket_timeout=1.5,
-                connect_timeout=1.5,
+                socket_connect_timeout=1.5,
                 decode_responses=False
             )
             # Test ping
