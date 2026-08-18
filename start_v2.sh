@@ -12,6 +12,12 @@ if [ -f ".env" ]; then
     set +a
 fi
 
+# 0. Iniciar Redis Cache (Servicio ligero en Docker)
+if command -v docker &> /dev/null && docker compose version &> /dev/null; then
+    echo "[0/4] Iniciando contenedor Redis Cache (memoria inteligente)..."
+    docker compose up -d redis-cache &> /dev/null || true
+fi
+
 # 1. Iniciar únicamente el proveedor de voz seleccionado.
 TTS_PROVIDER="${TTS_PROVIDER:-xtts}"
 TTS_SERVICE_STARTED=false

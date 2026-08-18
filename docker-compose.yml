@@ -50,6 +50,18 @@ services:
             - driver: nvidia
               capabilities: [ gpu ]
 
+  # Redis Cache Service - Caching de preguntas/respuestas frecuentes y audios PCM
+  redis-cache:
+    image: redis:7-alpine
+    container_name: redis-cache
+    command: redis-server --maxmemory 128mb --maxmemory-policy allkeys-lfu
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    restart: unless-stopped
+
 volumes:
   tts_models:
   huggingface_cache:
+  redis_data:

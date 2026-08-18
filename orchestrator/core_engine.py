@@ -514,6 +514,24 @@ class MonolithicEngine:
                 print(f"[Engine RAG Error] {e}")
 
         self.conversation_history.append({"role": "user", "content": prompt})
+        
+        # 2. Verificación de Redis Cache para preguntas/respuestas frecuentes
+        try:
+            from services.redis_cache import redis_cache
+            cached_data = redis_cache.get(text)
+            if cached_data:
+                cached_text = cached_data.get("text", "")
+                await self.emit_telemetry('telemetry_llm', {"token": cached_text, "provider": "Redis Cache"})
+                self.conversation_history.append({"role": "assistant", "content": cached_text})
+                await self.play_tts(cached_text)
+                await asyncio.sleep(0.5)
+                self.is_speaking = False
+                if self.wake_session_active:
+                    self._schedule_wake_session_timeout()
+                return
+        except Exception as cache_err:
+            print(f"[Redis Cache Error] {cache_err}")
+
         full_response_buffer = []
 
         print(f"[Engine] Pensando con {self.llm_provider.provider_name} ({self.llm_provider.model_name})...")
@@ -553,7 +571,16 @@ class MonolithicEngine:
             if sentence_buffer.strip():
                 await self.play_tts(sentence_buffer.strip())
 
-        self.conversation_history.append({"role": "assistant", "content": "".join(full_response_buffer)})
+        final_assistant_text = "".join(full_response_buffer)
+        self.conversation_history.append({"role": "assistant", "content": final_assistant_text})
+
+        # Guardar en Redis Cache para consultas futuras si no fue RAG dinámico
+        if final_assistant_text.strip() and not self.active_rag_collection:
+            try:
+                from services.redis_cache import redis_cache
+                redis_cache.set(text, final_assistant_text)
+            except Exception as cache_err:
+                print(f"[Redis Cache Store Error] {cache_err}")
 
         # Esperamos medio segundo extra antes de "encender" el micrófono
         # para que cualquier eco en la habitación termine de disiparse.
