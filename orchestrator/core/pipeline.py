@@ -119,6 +119,12 @@ class EnginePipeline:
                     self.voice_use_speaker_boost = state.get("voice_use_speaker_boost", True)
                     self.wake_word = state.get("wake_word", os.getenv("WAKE_WORD", "KodaVox"))
                     self.wake_session_timeout = state.get("wake_session_timeout", int(float(os.getenv("WAKE_SESSION_TIMEOUT_SECONDS", "10"))))
+                    self.vad_threshold = state.get("vad_threshold", float(VAD_THRESHOLD))
+                    self.vad_end_silence_seconds = state.get("vad_end_silence_seconds", float(VAD_END_SILENCE_SECONDS))
+                    self.stt_min_speech_seconds = state.get("stt_min_speech_seconds", float(STT_MIN_SPEECH_SECONDS))
+                    self.vad_pre_padding_seconds = state.get("vad_pre_padding_seconds", float(VAD_PRE_PADDING_SECONDS))
+                    self.piper_length_scale = state.get("piper_length_scale", float(PIPER_LENGTH_SCALE) if PIPER_LENGTH_SCALE else 0.85)
+                    self.piper_noise_scale = state.get("piper_noise_scale", float(PIPER_NOISE_SCALE) if PIPER_NOISE_SCALE else 0.75)
                     self.native_audio_output = state.get("native_audio_output", True)
                     self.robot_face_sync = state.get("robot_face_sync", False)
             else:
@@ -133,6 +139,12 @@ class EnginePipeline:
                 self.voice_use_speaker_boost = True
                 self.wake_word = os.getenv("WAKE_WORD", "KodaVox")
                 self.wake_session_timeout = int(float(os.getenv("WAKE_SESSION_TIMEOUT_SECONDS", "10")))
+                self.vad_threshold = float(VAD_THRESHOLD)
+                self.vad_end_silence_seconds = float(VAD_END_SILENCE_SECONDS)
+                self.stt_min_speech_seconds = float(STT_MIN_SPEECH_SECONDS)
+                self.vad_pre_padding_seconds = float(VAD_PRE_PADDING_SECONDS)
+                self.piper_length_scale = float(PIPER_LENGTH_SCALE) if PIPER_LENGTH_SCALE else 0.85
+                self.piper_noise_scale = float(PIPER_NOISE_SCALE) if PIPER_NOISE_SCALE else 0.75
                 self.native_audio_output = True
                 self.robot_face_sync = False
         except Exception as e:
@@ -148,6 +160,12 @@ class EnginePipeline:
             self.voice_use_speaker_boost = True
             self.wake_word = os.getenv("WAKE_WORD", "KodaVox")
             self.wake_session_timeout = int(float(os.getenv("WAKE_SESSION_TIMEOUT_SECONDS", "10")))
+            self.vad_threshold = float(VAD_THRESHOLD)
+            self.vad_end_silence_seconds = float(VAD_END_SILENCE_SECONDS)
+            self.stt_min_speech_seconds = float(STT_MIN_SPEECH_SECONDS)
+            self.vad_pre_padding_seconds = float(VAD_PRE_PADDING_SECONDS)
+            self.piper_length_scale = float(PIPER_LENGTH_SCALE) if PIPER_LENGTH_SCALE else 0.85
+            self.piper_noise_scale = float(PIPER_NOISE_SCALE) if PIPER_NOISE_SCALE else 0.75
             self.native_audio_output = True
             self.robot_face_sync = False
 
@@ -176,6 +194,12 @@ class EnginePipeline:
                     "voice_use_speaker_boost": getattr(self, 'voice_use_speaker_boost', True),
                     "wake_word": self.wake_word,
                     "wake_session_timeout": self.wake_session_timeout,
+                    "vad_threshold": getattr(self, 'vad_threshold', 0.6),
+                    "vad_end_silence_seconds": getattr(self, 'vad_end_silence_seconds', 0.7),
+                    "stt_min_speech_seconds": getattr(self, 'stt_min_speech_seconds', 0.3),
+                    "vad_pre_padding_seconds": getattr(self, 'vad_pre_padding_seconds', 0.2),
+                    "piper_length_scale": getattr(self, 'piper_length_scale', 0.85),
+                    "piper_noise_scale": getattr(self, 'piper_noise_scale', 0.75),
                     "native_audio_output": self.native_audio_output,
                     "robot_face_sync": getattr(self, 'robot_face_sync', False)
                 }, f, indent=4)
@@ -292,13 +316,13 @@ class EnginePipeline:
                     self.audio_buffer.extend(audio_float32)
                     self.silence_samples += len(audio_float32)
 
-                    if self.silence_samples >= SAMPLE_RATE * VAD_END_SILENCE_SECONDS:
+                    if self.silence_samples >= SAMPLE_RATE * self.vad_end_silence_seconds:
                         self.recording = False
                         self.loop.call_soon_threadsafe(
                             lambda: asyncio.create_task(self.emit_telemetry('telemetry_vad', {"is_speaking": False}))
                         )
 
-                        if self.speech_samples >= SAMPLE_RATE * STT_MIN_SPEECH_SECONDS:
+                        if self.speech_samples >= SAMPLE_RATE * self.stt_min_speech_seconds:
                             audio_to_process = np.array(self.audio_buffer, dtype=np.float32)
                             self.is_processing = True
                             self.loop.call_soon_threadsafe(
@@ -311,8 +335,8 @@ class EnginePipeline:
                         self.speech_samples = 0
                 else:
                     self.pre_padding.extend(audio_float32)
-                    if len(self.pre_padding) > SAMPLE_RATE * VAD_PRE_PADDING_SECONDS:
-                        self.pre_padding = self.pre_padding[-int(SAMPLE_RATE * VAD_PRE_PADDING_SECONDS):]
+                    if len(self.pre_padding) > SAMPLE_RATE * self.vad_pre_padding_seconds:
+                        self.pre_padding = self.pre_padding[-int(SAMPLE_RATE * self.vad_pre_padding_seconds):]
 
         return (in_data, pyaudio.paContinue)
 

@@ -44,6 +44,14 @@ function App() {
   const [mediaRecorder, setMediaRecorder] = useState(null);
   const [wakeWord, setWakeWord] = useState("");
   const [wakeTimeout, setWakeTimeout] = useState(10);
+  const [vadThreshold, setVadThreshold] = useState(0.6);
+  const [vadEndSilence, setVadEndSilence] = useState(0.7);
+  const [sttMinSpeech, setSttMinSpeech] = useState(0.3);
+  const [vadPrePadding, setVadPrePadding] = useState(0.2);
+  const [piperLengthScale, setPiperLengthScale] = useState(0.85);
+  const [piperNoiseScale, setPiperNoiseScale] = useState(0.75);
+  const [ttsProvider, setTtsProvider] = useState("elevenlabs");
+  const [sttProvider, setSttProvider] = useState("whisper");
   const [testVoiceText, setTestVoiceText] = useState("Hola, esta es una prueba de voz de KodaVox.");
   const [voiceStability, setVoiceStability] = useState(0.5);
   const [voiceSimilarity, setVoiceSimilarity] = useState(0.75);
@@ -100,6 +108,14 @@ function App() {
         const data = await resW.json();
         setWakeWord(data.wake_word);
         setWakeTimeout(data.wake_session_timeout);
+        if (data.vad_threshold !== undefined) setVadThreshold(data.vad_threshold);
+        if (data.vad_end_silence_seconds !== undefined) setVadEndSilence(data.vad_end_silence_seconds);
+        if (data.stt_min_speech_seconds !== undefined) setSttMinSpeech(data.stt_min_speech_seconds);
+        if (data.vad_pre_padding_seconds !== undefined) setVadPrePadding(data.vad_pre_padding_seconds);
+        if (data.piper_length_scale !== undefined) setPiperLengthScale(data.piper_length_scale);
+        if (data.piper_noise_scale !== undefined) setPiperNoiseScale(data.piper_noise_scale);
+        if (data.tts_provider) setTtsProvider(data.tts_provider);
+        if (data.stt_provider) setSttProvider(data.stt_provider);
       }
       const resH = await fetch(`${API_URL}/config/hardware`);
       if (resH.ok) {
@@ -219,9 +235,18 @@ function App() {
       await fetch(`${API_URL}/config/wakeword`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ word: wakeWord, timeout: wakeTimeout })
+        body: JSON.stringify({
+          word: wakeWord,
+          timeout: wakeTimeout,
+          vad_threshold: vadThreshold,
+          vad_end_silence_seconds: vadEndSilence,
+          stt_min_speech_seconds: sttMinSpeech,
+          vad_pre_padding_seconds: vadPrePadding,
+          piper_length_scale: piperLengthScale,
+          piper_noise_scale: piperNoiseScale
+        })
       });
-      alert("Configuración de Wakeword guardada exitosamente");
+      alert("Configuración de Wakeword y Calibración VAD guardada exitosamente");
     } catch (e) {
       console.error(e);
     }
@@ -711,8 +736,57 @@ function App() {
                     <p className="text-xs text-slate-500 ml-1 mt-1">Tiempo que KodaVox te escuchará después de hablar antes de volver a dormir.</p>
                   </div>
 
+                  <div className="h-px bg-slate-800/80 my-2"></div>
+
+                  <div className="space-y-4">
+                    <div className="flex items-center justify-between">
+                      <h3 className="font-semibold text-slate-200 text-lg">Calibración de Detección de Voz (VAD & Audio)</h3>
+                      <span className="text-[10px] uppercase font-bold tracking-wider bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 px-2.5 py-1 rounded-full">
+                        Afecta: Todos los proveedores (Whisper & ElevenLabs)
+                      </span>
+                    </div>
+
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6 bg-slate-950 p-5 rounded-xl border border-slate-800">
+                      <div>
+                        <div className="flex justify-between text-xs mb-2">
+                          <span className="text-slate-300 font-medium">Sensibilidad VAD (Threshold)</span>
+                          <span className="text-amber-400 font-mono bg-amber-500/10 px-2 py-0.5 rounded">{vadThreshold.toFixed(2)}</span>
+                        </div>
+                        <input type="range" min="0.1" max="0.9" step="0.05" value={vadThreshold} onChange={(e) => setVadThreshold(parseFloat(e.target.value))} className="w-full accent-amber-500 mb-1" />
+                        <p className="text-[11px] text-slate-400">Cuán fuerte debe sonar la voz respecto al ruido ambiente para activarse.</p>
+                      </div>
+
+                      <div>
+                        <div className="flex justify-between text-xs mb-2">
+                          <span className="text-slate-300 font-medium">Silencio de Fin de Frase (Seg)</span>
+                          <span className="text-amber-400 font-mono bg-amber-500/10 px-2 py-0.5 rounded">{vadEndSilence.toFixed(2)}s</span>
+                        </div>
+                        <input type="range" min="0.3" max="2.0" step="0.05" value={vadEndSilence} onChange={(e) => setVadEndSilence(parseFloat(e.target.value))} className="w-full accent-amber-500 mb-1" />
+                        <p className="text-[11px] text-slate-400">Segundos de silencio para asumir que terminaste de hablar y procesar la respuesta.</p>
+                      </div>
+
+                      <div>
+                        <div className="flex justify-between text-xs mb-2">
+                          <span className="text-slate-300 font-medium">Duración Mínima de Voz (Seg)</span>
+                          <span className="text-amber-400 font-mono bg-amber-500/10 px-2 py-0.5 rounded">{sttMinSpeech.toFixed(2)}s</span>
+                        </div>
+                        <input type="range" min="0.1" max="1.0" step="0.05" value={sttMinSpeech} onChange={(e) => setSttMinSpeech(parseFloat(e.target.value))} className="w-full accent-amber-500 mb-1" />
+                        <p className="text-[11px] text-slate-400">Filtra ruidos o estornudos muy breves para no hacer llamadas STT innecesarias.</p>
+                      </div>
+
+                      <div>
+                        <div className="flex justify-between text-xs mb-2">
+                          <span className="text-slate-300 font-medium">Pre-Padding de Audio (Seg)</span>
+                          <span className="text-amber-400 font-mono bg-amber-500/10 px-2 py-0.5 rounded">{vadPrePadding.toFixed(2)}s</span>
+                        </div>
+                        <input type="range" min="0.05" max="0.5" step="0.05" value={vadPrePadding} onChange={(e) => setVadPrePadding(parseFloat(e.target.value))} className="w-full accent-amber-500 mb-1" />
+                        <p className="text-[11px] text-slate-400">Milisegundos acumulados antes del habla para evitar recortar la primera palabra.</p>
+                      </div>
+                    </div>
+                  </div>
+
                   <button type="submit" className="bg-amber-600 hover:bg-amber-500 text-white px-6 py-3 rounded-xl font-medium transition-colors self-end mt-4 shadow-lg shadow-amber-500/20">
-                    Guardar Configuración
+                    Guardar Configuración de Wakeword y VAD
                   </button>
                 </form>
               </div>
@@ -778,8 +852,13 @@ function App() {
                 <div className="mb-8 bg-slate-950 p-6 rounded-xl border border-slate-800 shadow-inner">
                   <div className="flex items-center justify-between mb-6">
                     <div>
-                      <h3 className="font-semibold text-slate-300">Personalización de Emoción y Estilo</h3>
-                      <p className="text-xs text-slate-500 mt-1">Ajusta cómo la IA interpreta y pronuncia las emociones de la voz.</p>
+                      <div className="flex items-center gap-2">
+                        <h3 className="font-semibold text-slate-300">Personalización de Emoción y Estilo (ElevenLabs)</h3>
+                        <span className={`text-[10px] uppercase font-bold tracking-wider px-2 py-0.5 rounded-full border ${ttsProvider === 'elevenlabs' ? 'bg-indigo-500/20 text-indigo-400 border-indigo-500/30' : 'bg-slate-800 text-slate-500 border-slate-700'}`}>
+                          {ttsProvider === 'elevenlabs' ? 'Activo Actualmente' : 'Afecta solo a ElevenLabs'}
+                        </span>
+                      </div>
+                      <p className="text-xs text-slate-500 mt-1">Ajusta cómo la IA interpreta y pronuncia las emociones de la voz en la nube.</p>
                     </div>
                     <button onClick={handleSaveVoiceSettings} className="bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs px-4 py-2 rounded-lg transition-colors border border-slate-700 shadow-sm">
                       Guardar Ajustes
@@ -824,6 +903,47 @@ function App() {
                         <input type="checkbox" className="sr-only peer" checked={voiceSpeakerBoost} onChange={(e) => setVoiceSpeakerBoost(e.target.checked)} />
                         <div className="w-11 h-6 bg-slate-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-slate-300 after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-indigo-500 border border-slate-700"></div>
                       </label>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="mb-8 bg-slate-950 p-6 rounded-xl border border-slate-800 shadow-inner">
+                  <div className="flex items-center justify-between mb-6">
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <h3 className="font-semibold text-slate-300">Calibración de Piper TTS (Motor Local On-Device)</h3>
+                        <span className={`text-[10px] uppercase font-bold tracking-wider px-2 py-0.5 rounded-full border ${ttsProvider === 'piper' ? 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30' : 'bg-slate-800 text-slate-500 border-slate-700'}`}>
+                          {ttsProvider === 'piper' ? 'Activo Actualmente' : 'Afecta solo a Piper Local'}
+                        </span>
+                      </div>
+                      <p className="text-xs text-slate-500 mt-1">Ajusta la rapidez y expresividad sintética del modelo local `.onnx` cuando se usa Piper.</p>
+                    </div>
+                    <button onClick={handleSaveWakeWord} className="bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs px-4 py-2 rounded-lg transition-colors border border-slate-700 shadow-sm">
+                      Guardar Ajustes Piper
+                    </button>
+                  </div>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+                    <div>
+                      <div className="flex justify-between text-xs mb-2">
+                        <span className="text-slate-400 font-medium">Velocidad / Largo de Habla (Length Scale)</span>
+                        <span className="text-emerald-400 font-mono bg-emerald-500/10 px-2 rounded">{piperLengthScale.toFixed(2)}</span>
+                      </div>
+                      <input type="range" min="0.5" max="1.5" step="0.05" value={piperLengthScale} onChange={(e) => setPiperLengthScale(parseFloat(e.target.value))} className="w-full accent-emerald-500 mb-1" />
+                      <div className="flex justify-between text-[10px] text-slate-500">
+                        <span>Habla Rápida (ej. 0.85)</span>
+                        <span>Habla Lenta (ej. 1.20)</span>
+                      </div>
+                    </div>
+                    <div>
+                      <div className="flex justify-between text-xs mb-2">
+                        <span className="text-slate-400 font-medium">Variabilidad / Expresividad (Noise Scale)</span>
+                        <span className="text-emerald-400 font-mono bg-emerald-500/10 px-2 rounded">{piperNoiseScale.toFixed(2)}</span>
+                      </div>
+                      <input type="range" min="0.1" max="1.2" step="0.05" value={piperNoiseScale} onChange={(e) => setPiperNoiseScale(parseFloat(e.target.value))} className="w-full accent-emerald-500 mb-1" />
+                      <div className="flex justify-between text-[10px] text-slate-500">
+                        <span>Voz Estable</span>
+                        <span>Voz Expresiva</span>
+                      </div>
                     </div>
                   </div>
                 </div>

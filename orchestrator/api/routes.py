@@ -171,18 +171,39 @@ async def get_wakeword():
     from main import pipeline
     return {
         "wake_word": pipeline.wake_word,
-        "wake_session_timeout": pipeline.wake_session_timeout
+        "wake_session_timeout": pipeline.wake_session_timeout,
+        "vad_threshold": getattr(pipeline, 'vad_threshold', 0.6),
+        "vad_end_silence_seconds": getattr(pipeline, 'vad_end_silence_seconds', 0.7),
+        "stt_min_speech_seconds": getattr(pipeline, 'stt_min_speech_seconds', 0.3),
+        "vad_pre_padding_seconds": getattr(pipeline, 'vad_pre_padding_seconds', 0.2),
+        "tts_provider": TTS_PROVIDER,
+        "stt_provider": pipeline.stt_provider,
+        "piper_length_scale": getattr(pipeline, 'piper_length_scale', 0.85),
+        "piper_noise_scale": getattr(pipeline, 'piper_noise_scale', 0.75)
     }
 
 @router.post("/api/config/wakeword")
-async def set_wakeword(word: str = Body(None, embed=True), timeout: int = Body(None, embed=True)):
+async def set_wakeword(payload: dict = Body(...)):
     from main import pipeline
-    if word is not None:
-        pipeline.wake_word = word
-    if timeout is not None:
-        pipeline.wake_session_timeout = int(timeout)
+    if "word" in payload and payload["word"] is not None:
+        pipeline.wake_word = payload["word"]
+    if "timeout" in payload and payload["timeout"] is not None:
+        pipeline.wake_session_timeout = int(payload["timeout"])
+    if "vad_threshold" in payload:
+        pipeline.vad_threshold = float(payload["vad_threshold"])
+    if "vad_end_silence_seconds" in payload:
+        pipeline.vad_end_silence_seconds = float(payload["vad_end_silence_seconds"])
+    if "stt_min_speech_seconds" in payload:
+        pipeline.stt_min_speech_seconds = float(payload["stt_min_speech_seconds"])
+    if "vad_pre_padding_seconds" in payload:
+        pipeline.vad_pre_padding_seconds = float(payload["vad_pre_padding_seconds"])
+    if "piper_length_scale" in payload:
+        pipeline.piper_length_scale = float(payload["piper_length_scale"])
+    if "piper_noise_scale" in payload:
+        pipeline.piper_noise_scale = float(payload["piper_noise_scale"])
+
     pipeline._save_engine_state()
-    return {"message": "Configuración de Wakeword actualizada exitosamente"}
+    return {"message": "Configuración actualizada exitosamente"}
 
 @router.get("/api/config/hardware")
 async def get_hardware():
