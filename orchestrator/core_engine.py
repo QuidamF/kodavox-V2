@@ -18,11 +18,8 @@ from fastapi import FastAPI, UploadFile, File, Form, Body, HTTPException
 from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from faster_whisper import WhisperModel
 from contextlib import asynccontextmanager
-from services.piper_tts import PiperTTSService
 from services.llm_provider import LLMFactory, DEFAULT_SYSTEM_PROMPT
-from services.elevenlabs_tts import ElevenLabsTTSService
 from services.usage_tracker import tracker
 import httpx
 from services.rag_chroma import ChromaRAGService
@@ -90,6 +87,7 @@ class MonolithicEngine:
             self.elevenlabs_stt = ElevenLabsSTTService()
         else:
             print(f"[Engine] Cargando modelo Whisper {STT_MODEL} en GPU (Modo ultra-eficiente int8_float16)...", flush=True)
+            from faster_whisper import WhisperModel
             device = "cuda" if torch.cuda.is_available() else "cpu"
             compute_type = "int8_float16" if device == "cuda" else "int8"
             self.stt_model = WhisperModel(STT_MODEL, device=device, compute_type=compute_type)
@@ -625,8 +623,17 @@ class MonolithicEngine:
     async def play_piper_tts(self, text: str):
         """Sintetiza con Piper fuera del event loop y reproduce PCM localmente."""
         if self.piper_tts is None:
-            print("[Piper Error] Piper no está disponible; revisa el modelo y la configuración.")
-            return
+            try:
+                from services.piper_tts import PiperTTSService
+                self.piper_tts = PiperTTSService(
+                    model_path=PIPER_MODEL_PATH,
+                    length_scale=PIPER_LENGTH_SCALE,
+                    noise_scale=PIPER_NOISE_SCALE,
+                    speaker_id=PIPER_SPEAKER_ID
+                )
+            except Exception as e:
+                print(f"[Piper Error] Error al cargar PiperTTSService: {e}")
+                return
 
         print(f"[TTS] Sintetizando (Piper): {text}")
         await self.emit_telemetry('telemetry_tts', {"is_playing": True})
@@ -664,6 +671,7 @@ class MonolithicEngine:
     async def play_elevenlabs_tts(self, text: str):
         """Sintetiza con ElevenLabs API y reproduce el audio PCM en tiempo real."""
         if self.elevenlabs_tts is None or self.elevenlabs_tts.voice_id != self.active_voice_id:
+            from services.elevenlabs_tts import ElevenLabsTTSService
             self.elevenlabs_tts = ElevenLabsTTSService(voice_id=self.active_voice_id)
             self._update_elevenlabs_settings()
 
