@@ -78,3 +78,18 @@ class ElevenLabsSTTService:
         except Exception as e:
             logger.error(f"[ElevenLabs STT Exception] {e}")
             return ""
+
+    async def transcribe_audio_stream(
+        self,
+        audio_stream,
+        sample_rate: int = 16000,
+        language_code: Optional[str] = "spa"
+    ) -> str:
+        """
+        Recibe un iterador o generador de fragmentos de audio PCM y realiza la transcripción.
+        """
+        buffer = bytearray()
+        async for chunk in audio_stream:
+            buffer.extend(chunk)
+        return await self.transcribe_audio_bytes(bytes(buffer), sample_rate=sample_rate, language_code=language_code)
+
