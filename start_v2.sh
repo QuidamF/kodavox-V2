@@ -15,7 +15,7 @@ fi
 # 0. Iniciar Redis Cache (Servicio ligero en Docker)
 if command -v docker &> /dev/null && docker compose version &> /dev/null; then
     echo "[0/4] Iniciando contenedor Redis Cache (memoria inteligente)..."
-    docker compose up -d redis-cache &> /dev/null || true
+    docker compose up -d redis-cache
 fi
 
 # 1. Iniciar únicamente el proveedor de voz seleccionado.
