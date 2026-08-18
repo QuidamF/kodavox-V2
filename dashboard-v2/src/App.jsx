@@ -1231,11 +1231,11 @@ function App() {
 
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   {[
+                    { label: `Modelo STT (${healthStatus?.stt_provider === 'elevenlabs' ? 'ElevenLabs Scribe Cloud' : 'Whisper GPU Local'})`, status: healthStatus?.stt },
                     { label: "Modelo VAD (Silero)", status: healthStatus?.vad },
-                    { label: "Modelo STT (Whisper)", status: healthStatus?.stt },
                     { label: "Proveedor LLM", status: healthStatus?.llm },
                     { label: "Conexión RAG (Chroma)", status: healthStatus?.rag },
-                    { label: "Micrófono Abierto", status: healthStatus?.microphone_active },
+                    { label: "Micrófono (Captura PyAudio)", status: healthStatus?.microphone_active },
                   ].map((item, idx) => (
                     <div key={idx} className="bg-slate-950 p-4 rounded-xl border border-slate-800 flex items-center justify-between">
                       <span className="font-medium text-slate-300">{item.label}</span>

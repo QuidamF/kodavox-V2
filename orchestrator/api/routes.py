@@ -240,6 +240,8 @@ async def get_health():
     try:
         if hasattr(pipeline, 'stream') and pipeline.stream is not None:
             mic_active = bool(pipeline.stream.is_active())
+        elif hasattr(pipeline, 'pa') and pipeline.pa is not None:
+            mic_active = True
     except Exception:
         mic_active = False
 
