@@ -1,30 +1,31 @@
 # Integración ElevenLabs STT (Scribe)
 
-Esta rama `feature/elevenlabs-stt` contiene los componentes para evaluar y consumir la API de **ElevenLabs Speech-to-Text (Scribe)**.
+Esta rama `feature/elevenlabs-stt` contiene la integración completa del proveedor **ElevenLabs Speech-to-Text (Scribe)** dentro del motor y flujo orquestador de KodaVox.
 
-## Archivos Creados
-1. `orchestrator/services/elevenlabs_stt.py`: Servicio `ElevenLabsSTTService` encargado de convertir audio PCM/WAV y consumir el endpoint de ElevenLabs `/v1/speech-to-text`.
-2. `scripts/test_elevenlabs_stt.py`: Script de prueba autónomo para validar el tiempo de respuesta y la precisión de la transcripción.
+## Variables de Entorno en `.env`
 
-## Requisitos de Configuración
-Asegúrate de contar con tu clave de API en tu archivo `.env` o variable de entorno:
 ```env
+# Clave API
 ELEVENLABS_API_KEY=tu_api_key_aqui
+
+# Configuración de Proveedor STT (whisper | elevenlabs)
+STT_PROVIDER=elevenlabs
 ```
 
-## Ejemplo de Uso
+## Arquitectura y Componentes
+1. `orchestrator/services/elevenlabs_stt.py`: Servicio `ElevenLabsSTTService` encargado de convertir audio PCM de voz (segmentado dinámicamente por Silero VAD) a formato WAV en memoria y realizar la solicitud HTTP/STT hacia ElevenLabs Scribe `/v1/speech-to-text`.
+2. `orchestrator/core_engine.py`: Incorpora el selector `STT_PROVIDER`. Si está configurado en `elevenlabs`, conmuta la transcripción local de Whisper hacia la API cloud de ElevenLabs.
+3. `scripts/test_elevenlabs_stt.py`: Script de prueba independiente para benchmark con audios de prueba local (`--file`).
 
-```python
-from services.elevenlabs_stt import ElevenLabsSTTService
+## Cómo probar en el Motor Principal (KodaVox V2)
 
-stt_service = ElevenLabsSTTService()
-# audio_pcm es un buffer de bytes PCM (ejemplo: 16kHz, 16-bit mono)
-text = await stt_service.transcribe_audio_bytes(audio_pcm, sample_rate=16000, language_code="spa")
-print("Transcripción:", text)
-```
+Para iniciar KodaVox utilizando ElevenLabs STT:
 
-## Script de Prueba
-Puedes ejecutar la prueba con:
 ```bash
-python3 scripts/test_elevenlabs_stt.py
+# Definir variable de entorno o ponerla en .env
+export STT_PROVIDER=elevenlabs
+
+# Ejecutar el motor
+source /home/edgar-ld/Escritorio/venv/bin/activate
+python3 orchestrator/core_engine.py
 ```

@@ -32,6 +32,7 @@ SAMPLE_RATE = 16000
 CHUNK_SIZE = 512
 OLLAMA_URL = os.getenv("OLLAMA_HOST", "http://127.0.0.1:11434") + "/api/generate"
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen2.5:3b")
+STT_PROVIDER = os.getenv("STT_PROVIDER", "whisper").lower()
 STT_MODEL = os.getenv("STT_MODEL", "small")
 STT_BEAM_SIZE = int(os.getenv("STT_BEAM_SIZE", "5"))
 STT_INITIAL_PROMPT = os.getenv("STT_INITIAL_PROMPT", "KodaVox, NextBeam")
@@ -78,15 +79,20 @@ class MonolithicEngine:
         self.vad_model.to("cpu")
         self.get_speech_timestamps = utils[0]
         
-        # 3. STT (Whisper) - Regresamos a GPU pero con CUANTIZACIÓN AGRESIVA (int8_float16)
-        # Esto reduce el consumo de VRAM a menos de la mitad que float16, manteniendo la velocidad.
-        print(f"[Engine] Cargando modelo Whisper {STT_MODEL} en GPU (Modo ultra-eficiente int8_float16)...")
-        print(f"         ⏳ (Si es la primera vez que usas '{STT_MODEL}', se descargará de internet. Esto puede tardar unos minutos y parecer congelado. ¡Paciencia!)")
-        device = "cuda" if torch.cuda.is_available() else "cpu"
-        # int8_float16 es el truco para GPUs con poca memoria pero que necesitan velocidad
-        compute_type = "int8_float16" if device == "cuda" else "int8"
+        # 3. STT (Whisper o ElevenLabs)
+        self.stt_provider = STT_PROVIDER
+        self.stt_model = None
+        self.elevenlabs_stt = None
         
-        self.stt_model = WhisperModel(STT_MODEL, device=device, compute_type=compute_type)
+        if self.stt_provider == "elevenlabs":
+            from services.elevenlabs_stt import ElevenLabsSTTService
+            print("[Engine] Usando ElevenLabs STT (Scribe cloud)...")
+            self.elevenlabs_stt = ElevenLabsSTTService()
+        else:
+            print(f"[Engine] Cargando modelo Whisper {STT_MODEL} en GPU (Modo ultra-eficiente int8_float16)...")
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+            compute_type = "int8_float16" if device == "cuda" else "int8"
+            self.stt_model = WhisperModel(STT_MODEL, device=device, compute_type=compute_type)
         
         self.stt_prompt = STT_INITIAL_PROMPT
         
@@ -371,19 +377,29 @@ class MonolithicEngine:
         self.is_processing = True
         await self._set_engine_state("processing")
         try:
-            print("[Engine] Transcribiendo (GPU ultra-fast)...")
-            padding = np.zeros(int(SAMPLE_RATE * 0.2), dtype=np.float32)
-            audio_padded = np.concatenate([audio_data, padding])
+            if self.stt_provider == "elevenlabs" and self.elevenlabs_stt:
+                print("[Engine] Transcribiendo con ElevenLabs STT (Scribe Cloud)...")
+                # Convertir float32 array (-1.0 to 1.0) a int16 pcm bytes
+                pcm_int16 = (audio_data * 32767).astype(np.int16).tobytes()
+                text = await self.elevenlabs_stt.transcribe_audio_bytes(
+                    pcm_int16,
+                    sample_rate=SAMPLE_RATE,
+                    language_code="spa"
+                )
+            else:
+                print("[Engine] Transcribiendo con Whisper (GPU ultra-fast)...")
+                padding = np.zeros(int(SAMPLE_RATE * 0.2), dtype=np.float32)
+                audio_padded = np.concatenate([audio_data, padding])
 
-            segments, _ = self.stt_model.transcribe(
-                audio_padded,
-                beam_size=STT_BEAM_SIZE,
-                language="es",
-                initial_prompt=self.stt_prompt or None,
-                vad_filter=STT_VAD_FILTER,
-                condition_on_previous_text=STT_CONDITION_ON_PREVIOUS_TEXT,
-            )
-            text = " ".join([segment.text for segment in segments]).strip()
+                segments, _ = self.stt_model.transcribe(
+                    audio_padded,
+                    beam_size=STT_BEAM_SIZE,
+                    language="es",
+                    initial_prompt=self.stt_prompt or None,
+                    vad_filter=STT_VAD_FILTER,
+                    condition_on_previous_text=STT_CONDITION_ON_PREVIOUS_TEXT,
+                )
+                text = " ".join([segment.text for segment in segments]).strip()
 
             if not text or len(text) < 2:
                 return
@@ -913,7 +929,8 @@ async def test_tts(payload: dict = Body(...)):
 async def get_health():
     return {
         "vad": engine.vad_model is not None,
-        "stt": engine.stt_model is not None,
+        "stt": engine.stt_model is not None or engine.elevenlabs_stt is not None,
+        "stt_provider": engine.stt_provider,
         "llm": engine.llm_provider is not None,
         "rag": engine.rag_service is not None,
         "microphone_active": engine.stream is not None and engine.stream.is_active(),
