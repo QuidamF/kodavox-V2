@@ -409,6 +409,8 @@ class MonolithicEngine:
                 print(f"[Engine] Alucinación de Whisper filtrada: {text}")
                 return
 
+            print(f"[STT Transcrito]: '{text}'")
+
             if self.interaction_mode == "wakeword":
                 if self.awaiting_user_query:
                     self.awaiting_user_query = False
@@ -416,7 +418,7 @@ class MonolithicEngine:
                     # La sesión sigue abierta: aceptamos turnos posteriores sin repetir wake word.
                     pass
                 elif not self._contains_wake_word(text):
-                    print(f"[Engine] Ignorado sin wake word: {text}")
+                    print(f"[Engine] Wakeword no detectada en: '{text}'")
                     return
                 else:
                     self.wake_session_active = True
@@ -441,16 +443,24 @@ class MonolithicEngine:
         return "".join(char for char in normalized if unicodedata.category(char) != "Mn")
 
     def _contains_wake_word(self, text: str) -> bool:
-        if self._normalize_text(self.wake_word).replace(" ", "") == "kodavox":
-            return bool(re.search(r"koda\s*vox", text, flags=re.IGNORECASE))
+        norm_text = self._normalize_text(text)
+        norm_wake = self._normalize_text(self.wake_word).replace(" ", "")
+        
+        if norm_wake == "kodavox":
+            # Coincide con kodavox, koda vox, codavox, coda vox, kodabox, koda box, codabox, coda box, koda, coda
+            pattern = r"\b(koda|coda)\s*(vox|box)?\b"
+            return bool(re.search(pattern, norm_text, flags=re.IGNORECASE))
+            
         return bool(re.search(re.escape(self.wake_word), text, flags=re.IGNORECASE))
 
     def _remove_wake_word(self, text: str) -> str:
-        # Whisper puede transcribir “KodaVox” como “Koda Vox”.
-        if self._normalize_text(self.wake_word).replace(" ", "") == "kodavox":
-            match = re.search(r"koda\s*vox", text, flags=re.IGNORECASE)
+        norm_wake = self._normalize_text(self.wake_word).replace(" ", "")
+        if norm_wake == "kodavox":
+            # Usar regex normalizado para remover del texto original
+            match = re.search(r"\b(koda|coda)\s*(vox|box)?\b", text, flags=re.IGNORECASE)
         else:
             match = re.search(re.escape(self.wake_word), text, flags=re.IGNORECASE)
+            
         if match:
             return text[match.end():].lstrip(" ,.:;!?")
         return ""
