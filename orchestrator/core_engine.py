@@ -86,10 +86,10 @@ class MonolithicEngine:
         
         if self.stt_provider == "elevenlabs":
             from services.elevenlabs_stt import ElevenLabsSTTService
-            print("[Engine] Usando ElevenLabs STT (Scribe cloud)...")
+            print("[Engine] Usando ElevenLabs STT (Scribe cloud)...", flush=True)
             self.elevenlabs_stt = ElevenLabsSTTService()
         else:
-            print(f"[Engine] Cargando modelo Whisper {STT_MODEL} en GPU (Modo ultra-eficiente int8_float16)...")
+            print(f"[Engine] Cargando modelo Whisper {STT_MODEL} en GPU (Modo ultra-eficiente int8_float16)...", flush=True)
             device = "cuda" if torch.cuda.is_available() else "cpu"
             compute_type = "int8_float16" if device == "cuda" else "int8"
             self.stt_model = WhisperModel(STT_MODEL, device=device, compute_type=compute_type)
@@ -112,8 +112,8 @@ class MonolithicEngine:
         self.vad_threshold = VAD_THRESHOLD
         self.interaction_mode = INTERACTION_MODE
         if self.interaction_mode not in ["active", "wakeword"]:
-            print(f"[Engine] INTERACTION_MODE inválido: {INTERACTION_MODE}. Usando active.")
-        print(f"[Engine] Modo de interacción: {self.interaction_mode}. Umbral VAD: {self.vad_threshold}.")
+            print(f"[Engine] INTERACTION_MODE inválido: {INTERACTION_MODE}. Usando active.", flush=True)
+        print(f"[Engine] Modo de interacción: {self.interaction_mode}. Umbral VAD: {self.vad_threshold}.", flush=True)
         self.piper_tts = None
         self.elevenlabs_tts = None
         
@@ -378,7 +378,7 @@ class MonolithicEngine:
         await self._set_engine_state("processing")
         try:
             if self.stt_provider == "elevenlabs" and self.elevenlabs_stt:
-                print("[Engine] Transcribiendo con ElevenLabs STT (Scribe Cloud)...")
+                print("[Engine] Transcribiendo con ElevenLabs STT (Scribe Cloud)...", flush=True)
                 # Convertir float32 array (-1.0 to 1.0) a int16 pcm bytes
                 pcm_int16 = (audio_data * 32767).astype(np.int16).tobytes()
                 text = await self.elevenlabs_stt.transcribe_audio_bytes(
@@ -387,7 +387,7 @@ class MonolithicEngine:
                     language_code="spa"
                 )
             else:
-                print("[Engine] Transcribiendo con Whisper (GPU ultra-fast)...")
+                print("[Engine] Transcribiendo con Whisper (GPU ultra-fast)...", flush=True)
                 padding = np.zeros(int(SAMPLE_RATE * 0.2), dtype=np.float32)
                 audio_padded = np.concatenate([audio_data, padding])
 
@@ -406,10 +406,10 @@ class MonolithicEngine:
                 
             # Filtro anti-alucinaciones: Whisper a veces escupe el initial_prompt cuando hay ruido
             if text.lower().replace(",", "") == STT_INITIAL_PROMPT.lower().replace(",", ""):
-                print(f"[Engine] Alucinación de Whisper filtrada: {text}")
+                print(f"[Engine] Alucinación de Whisper filtrada: {text}", flush=True)
                 return
 
-            print(f"[STT Transcrito]: '{text}'")
+            print(f"[STT Transcrito]: '{text}'", flush=True)
 
             if self.interaction_mode == "wakeword":
                 if self.awaiting_user_query:
@@ -418,7 +418,7 @@ class MonolithicEngine:
                     # La sesión sigue abierta: aceptamos turnos posteriores sin repetir wake word.
                     pass
                 elif not self._contains_wake_word(text):
-                    print(f"[Engine] Wakeword no detectada en: '{text}'")
+                    print(f"[Engine] Wakeword '{self.wake_word}' no detectada en: '{text}'", flush=True)
                     return
                 else:
                     self.wake_session_active = True
@@ -426,7 +426,7 @@ class MonolithicEngine:
                     if not text:
                         self.awaiting_user_query = True
                         self._schedule_wake_session_timeout()
-                        print(f"[Engine] Wake word detectada. Esperando consulta: {self.wake_word}.")
+                        print(f"[Engine] Wake word detectada. Esperando consulta: {self.wake_word}.", flush=True)
                         asyncio.create_task(self._set_engine_state("idle"))
                         return
 
