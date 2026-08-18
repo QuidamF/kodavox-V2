@@ -22,7 +22,6 @@ from contextlib import asynccontextmanager
 from services.llm_provider import LLMFactory, DEFAULT_SYSTEM_PROMPT
 from services.usage_tracker import tracker
 import httpx
-from services.rag_chroma import ChromaRAGService
 
 # --- Configuración Base ---
 SAMPLE_RATE = 16000
@@ -115,14 +114,16 @@ class MonolithicEngine:
         self.piper_tts = None
         self.elevenlabs_tts = None
         
-        # RAG Local Inicialización
-        self.rag_service = ChromaRAGService()
+        # RAG Local Inicialización (Lazy Loaded)
+        self.rag_service = None
         self.active_rag_collection = ""
         
         self.engine_state = "idle" # idle, listening, processing, speaking
         
         self._load_engine_state()
         if self.active_rag_collection:
+            from services.rag_chroma import ChromaRAGService
+            self.rag_service = ChromaRAGService()
             print(f"[Engine] RAG Activado con colección: {self.active_rag_collection}")
             
         self.llm_provider = LLMFactory.get_provider()
@@ -502,6 +503,9 @@ class MonolithicEngine:
         prompt = text
         if self.active_rag_collection:
             try:
+                if self.rag_service is None:
+                    from services.rag_chroma import ChromaRAGService
+                    self.rag_service = ChromaRAGService()
                 context = await asyncio.to_thread(self.rag_service.get_relevant_context, self.active_rag_collection, text)
                 if context:
                     print(f"[Engine] Contexto RAG recuperado de '{self.active_rag_collection}'")
