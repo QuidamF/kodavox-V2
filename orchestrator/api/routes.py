@@ -236,13 +236,20 @@ async def test_tts(payload: dict = Body(...)):
 @router.get("/api/diagnostics/health")
 async def get_health():
     from main import pipeline
+    mic_active = False
+    try:
+        if hasattr(pipeline, 'stream') and pipeline.stream is not None:
+            mic_active = bool(pipeline.stream.is_active())
+    except Exception:
+        mic_active = False
+
     return {
         "vad": pipeline.vad_model is not None,
         "stt": pipeline.stt_model is not None or pipeline.elevenlabs_stt is not None,
         "stt_provider": pipeline.stt_provider,
         "llm": pipeline.llm_provider is not None,
         "rag": pipeline.rag_service is not None,
-        "microphone_active": getattr(pipeline, 'stream', None) is not None and pipeline.stream.is_active(),
+        "microphone_active": mic_active,
         "is_speaking": pipeline.is_speaking,
         "is_processing": pipeline.is_processing
     }
