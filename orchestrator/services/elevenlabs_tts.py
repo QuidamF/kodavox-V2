@@ -97,22 +97,26 @@ class ElevenLabsTTSService:
                 # 2. Tarea para enviar texto (sender)
                 async def sender():
                     char_count = 0
-                    token_buffer = ""
+                    word_buffer = ""
                     try:
                         async for token in text_iterator:
                             if token:
                                 char_count += len(token)
-                                token_buffer += token
-                                # Forzar el envío inmediato de fragmentos con espacio o puntuación
-                                # ElevenLabs WebSocket procesa el audio cuando recibe signos de puntuación o "flush": true
-                                has_punctuation = any(c in token for c in ['.', ',', '!', '?', ';', ':', '\n'])
-                                payload = {"text": token}
-                                if has_punctuation:
-                                    payload["flush"] = True
-                                
-                                await websocket.send(json.dumps(payload))
-                                
-                        # Enviar EOS (End of Stream) con cadena vacía y flush
+                                word_buffer += token
+                                # Enviar cuando tengamos al menos un espacio, salto de línea o puntuación (palabra completa)
+                                if any(c in token for c in [' ', '\n', '.', ',', '!', '?', ';', ':']):
+                                    has_punct = any(c in word_buffer for c in ['.', '!', '?', ';', ':', '\n'])
+                                    payload = {"text": word_buffer}
+                                    if has_punct:
+                                        payload["flush"] = True
+                                    await websocket.send(json.dumps(payload))
+                                    word_buffer = ""
+                                    
+                        # Enviar remanente si quedó algo en word_buffer
+                        if word_buffer.strip():
+                            await websocket.send(json.dumps({"text": word_buffer, "flush": True}))
+                            
+                        # Enviar EOS (End of Stream)
                         await websocket.send(json.dumps({"text": "", "flush": True}))
                         if char_count > 0:
                             tracker.add_elevenlabs_chars(char_count)
