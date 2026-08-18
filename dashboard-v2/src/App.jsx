@@ -22,6 +22,8 @@ function App() {
   const [llmStream, setLlmStream] = useState("");
   const [llmProvider, setLlmProvider] = useState("");
   const [ttsActive, setTtsActive] = useState(false);
+  const [engineState, setEngineState] = useState("idle");
+  const [sessionActive, setSessionActive] = useState(false);
 
   // RAG States
   const [collections, setCollections] = useState([]);
@@ -520,6 +522,10 @@ function App() {
 
     socket.on('telemetry_mic', (data) => setMicEnergy(data.energy));
     socket.on('telemetry_vad', (data) => setVadActive(data.is_speaking));
+    socket.on('telemetry_state', (data) => {
+      if (data.state) setEngineState(data.state);
+      if (data.session_active !== undefined) setSessionActive(data.session_active);
+    });
     socket.on('telemetry_stt', (data) => setSttText(data.text));
     socket.on('telemetry_llm', (data) => {
       setLlmStream(prev => prev + data.token);
@@ -1249,13 +1255,21 @@ function App() {
                     </div>
                   ))}
                   <div className="bg-slate-950 p-4 rounded-xl border border-slate-800 flex items-center justify-between md:col-span-2">
-                    <span className="font-medium text-slate-300">Estado del Motor</span>
+                    <span className="font-medium text-slate-300">Estado del Motor en Tiempo Real</span>
                     <div className="flex gap-2">
-                      <span className={`px-3 py-1 rounded-full text-xs font-bold uppercase tracking-wider ${vadActive ? 'bg-orange-500/20 text-orange-400' : 'bg-slate-800 text-slate-500'}`}>
-                        {vadActive ? 'Hablando' : 'Silencio'}
+                      {engineState === 'wakeword_detected' && (
+                        <span className="px-3 py-1 rounded-full text-xs font-bold uppercase tracking-wider bg-amber-500/20 text-amber-400 border border-amber-500/30 animate-pulse">
+                          ⚡ Wakeword Detectada
+                        </span>
+                      )}
+                      <span className={`px-3 py-1 rounded-full text-xs font-bold uppercase tracking-wider ${sessionActive ? 'bg-blue-500/20 text-blue-400 border border-blue-500/30' : 'bg-slate-800 text-slate-500'}`}>
+                        {sessionActive ? 'Sesión Activa' : 'Standby / Esperando Wakeword'}
                       </span>
-                      <span className={`px-3 py-1 rounded-full text-xs font-bold uppercase tracking-wider ${llmStream || ttsActive ? 'bg-purple-500/20 text-purple-400' : 'bg-slate-800 text-slate-500'}`}>
-                        {llmStream || ttsActive ? 'Procesando' : 'Idle'}
+                      <span className={`px-3 py-1 rounded-full text-xs font-bold uppercase tracking-wider ${vadActive ? 'bg-orange-500/20 text-orange-400' : 'bg-slate-800 text-slate-500'}`}>
+                        {vadActive ? 'Usuario Hablando' : 'Silencio'}
+                      </span>
+                      <span className={`px-3 py-1 rounded-full text-xs font-bold uppercase tracking-wider ${llmStream || ttsActive || engineState === 'processing' ? 'bg-purple-500/20 text-purple-400' : 'bg-slate-800 text-slate-500'}`}>
+                        {ttsActive ? 'Hablando (TTS)' : llmStream || engineState === 'processing' ? 'Generando Respuesta' : 'Idle'}
                       </span>
                     </div>
                   </div>

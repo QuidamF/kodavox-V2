@@ -251,16 +251,14 @@ class EnginePipeline:
         })
         
         if getattr(self, 'robot_face_sync', False):
-            if self.interaction_mode == "wakeword" and not self.wake_session_active:
-                mood = "Neutral"
-            else:
-                mood_map = {
-                    "idle": "Alerta" if self.wake_session_active else "Neutral",
-                    "listening": "Escuchando",
-                    "processing": "Pensando",
-                    "speaking": "Feliz"
-                }
-                mood = mood_map.get(new_state, "Neutral")
+            mood_map = {
+                "idle": "Alerta" if self.wake_session_active else "Neutral",
+                "listening": "Escuchando",
+                "processing": "Pensando",
+                "wakeword_detected": "Sorprendido",
+                "speaking": "Feliz"
+            }
+            mood = mood_map.get(new_state, "Neutral")
             try:
                 asyncio.create_task(self._send_robot_face_mood(mood))
             except Exception:
@@ -387,12 +385,14 @@ class EnginePipeline:
                     return
                 else:
                     self.wake_session_active = True
+                    await self._set_engine_state("wakeword_detected")
                     text = self._remove_wake_word(text)
                     if not text:
                         self.awaiting_user_query = True
                         self._schedule_wake_session_timeout()
                         print(f"[Pipeline] Wake word detectada. Esperando consulta: {self.wake_word}.", flush=True)
-                        asyncio.create_task(self._set_engine_state("idle"))
+                        await asyncio.sleep(0.4)
+                        await self._set_engine_state("idle")
                         return
 
             print(f"[Usuario]: {text}")
