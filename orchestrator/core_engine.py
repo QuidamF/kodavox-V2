@@ -437,33 +437,15 @@ class MonolithicEngine:
         finally:
             self.is_processing = False
 
-    @staticmethod
-    def _normalize_text(text: str) -> str:
-        normalized = unicodedata.normalize("NFD", text.lower())
-        return "".join(char for char in normalized if unicodedata.category(char) != "Mn")
-
     def _contains_wake_word(self, text: str) -> bool:
-        norm_text = self._normalize_text(text)
-        norm_wake = self._normalize_text(self.wake_word).replace(" ", "")
-        
-        if norm_wake == "kodavox":
-            # Coincide con kodavox, koda vox, codavox, coda vox, kodabox, koda box, codabox, coda box, koda, coda
-            pattern = r"\b(koda|coda)\s*(vox|box)?\b"
-            return bool(re.search(pattern, norm_text, flags=re.IGNORECASE))
-            
-        return bool(re.search(re.escape(self.wake_word), text, flags=re.IGNORECASE))
+        from services.wake_word import wake_word_matcher
+        detected, _ = wake_word_matcher.check_and_extract(text, self.wake_word)
+        return detected
 
     def _remove_wake_word(self, text: str) -> str:
-        norm_wake = self._normalize_text(self.wake_word).replace(" ", "")
-        if norm_wake == "kodavox":
-            # Usar regex normalizado para remover del texto original
-            match = re.search(r"\b(koda|coda)\s*(vox|box)?\b", text, flags=re.IGNORECASE)
-        else:
-            match = re.search(re.escape(self.wake_word), text, flags=re.IGNORECASE)
-            
-        if match:
-            return text[match.end():].lstrip(" ,.:;!?")
-        return ""
+        from services.wake_word import wake_word_matcher
+        _, clean_text = wake_word_matcher.check_and_extract(text, self.wake_word)
+        return clean_text
 
     def _cancel_wake_session_timeout(self) -> None:
         if self.wake_session_timeout_task and not self.wake_session_timeout_task.done():

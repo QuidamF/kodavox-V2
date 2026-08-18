@@ -1,81 +1,86 @@
-import asyncio
-import websockets
-import json
-import logging
-from config import Config
-from core.event_bus import EventBus
-from core.state_manager import StateManager, AppState
+import re
+import unicodedata
+from difflib import SequenceMatcher
+from typing import Tuple
 
-class WakeWordService:
-    def __init__(self, event_bus: EventBus, state_manager: StateManager):
-        self.bus = event_bus
-        self.state_manager = state_manager
-        self._active = False
-        self.uri = Config.WAKEWORD_URI
-        self.websocket = None
-        self._connected = False
+class DynamicWakeWordMatcher:
+    def __init__(self, threshold: float = 0.72):
+        self.threshold = threshold
+
+    def normalize_phonetic(self, text: str) -> str:
+        """
+        Normaliza el texto a minúsculas, remueve acentos/puntuación
+        y aplica transformaciones fonéticas aproximadas en español/inglés.
+        """
+        if not text:
+            return ""
+        # 1. Quitar acentos y caracteres especiales
+        normalized = unicodedata.normalize("NFD", text.lower().strip())
+        clean_text = "".join(char for char in normalized if unicodedata.category(char) != "Mn")
+        clean_text = re.sub(r'[^\w\s]', '', clean_text)
         
-        print(f"[WakeWordService] Initialized. Remote URI: {self.uri}")
+        # 2. Mapeos fonéticos equivalentes en español/inglés
+        phonetic_text = clean_text
+        phonetic_text = re.sub(r'[v]', 'b', phonetic_text)
+        phonetic_text = re.sub(r'[c|q|k]', 'k', phonetic_text)
+        phonetic_text = re.sub(r'[z|s]', 's', phonetic_text)
+        phonetic_text = re.sub(r'[g|j]', 'j', phonetic_text)
+        phonetic_text = re.sub(r'[h]', '', phonetic_text)  # H muda
+        phonetic_text = re.sub(r'\s+', ' ', phonetic_text).strip()
+        
+        return phonetic_text
 
-    def start(self):
-        self._active = True
-        # We don't connect immediately here because we'll connect/reconnect as needed
-        # OR we could start an connection loop. Given it's a critical always-on service,
-        # let's try to maintain a connection.
-        asyncio.create_task(self.connect())
-        print("[WakeWordService] Active.")
+    def check_and_extract(self, text: str, target_wake_word: str) -> Tuple[bool, str]:
+        """
+        Verifica si el texto de la transcripción contiene la palabra de activación deseada
+        (o una variante fonética/fuzzy similar) al inicio o dentro de la frase.
+        
+        Retorna:
+        - bool: True si se detectó la palabra de activación.
+        - str: El texto limpio removiendo la palabra de activación detectada.
+        """
+        if not text or not target_wake_word:
+            return False, text
 
-    async def connect(self):
-        """Maintains a persistent connection to the wakeword service."""
-        while self._active:
-            if not self._connected:
-                try:
-                    print(f"[WakeWordService] Connecting to {self.uri}...")
-                    self.websocket = await websockets.connect(self.uri)
-                    self._connected = True
-                    print("[WakeWordService] Connected to remote Wake Word service.")
-                    
-                    # Listen for detection events in background
-                    asyncio.create_task(self._listen())
-                except Exception as e:
-                    print(f"[WakeWordService] Connection failed: {e}. Retrying in 5s...")
-                    self._connected = False
-                    await asyncio.sleep(5)
-            else:
-                await asyncio.sleep(1)
+        # Si la transcripción completa coincide exactamente
+        norm_text = self.normalize_phonetic(text)
+        norm_target = self.normalize_phonetic(target_wake_word)
+        
+        if not norm_target:
+            return False, text
 
-    async def _listen(self):
-        """Listens for JSON events from the server."""
-        try:
-            async for message in self.websocket:
-                data = json.loads(message)
-                if data.get("event") == "detected":
-                    score = data.get("score", 1.0)
-                    print(f"[WakeWordService] Wake Word Detected by remote! ({score:.2f})")
-                    await self.bus.emit("activation_trigger", {"source": "wakeword", "score": float(score)})
-        except Exception as e:
-            print(f"[WakeWordService] Listen error: {e}")
-        finally:
-            self._connected = False
-            self.websocket = None
+        words = norm_text.split()
+        target_words = norm_target.split()
+        target_word_count = len(target_words)
 
-    def stop(self):
-        self._active = False
-        self._connected = False
-        print("[WakeWordService] Stopped.")
+        if not words:
+            return False, text
 
-    async def process_audio(self, audio_data: bytes):
-        """Sends audio chunks to the remote service for detection."""
-        if not self._active or not self._connected or not self.websocket:
-            return
+        # Probar subfrases n-grama desde el inicio del texto
+        # Probamos combinaciones de longitud: target_word_count y target_word_count + 1
+        for n in range(target_word_count, min(len(words) + 1, target_word_count + 2)):
+            ngram = " ".join(words[:n])
+            ratio = SequenceMatcher(None, ngram, norm_target).ratio()
+            
+            if ratio >= self.threshold:
+                # Extraer la palabra de activación del texto original
+                # Buscamos la posición aproximada en las palabras originales
+                orig_words = text.strip().split()
+                remaining_words = orig_words[n:]
+                clean_extracted_text = " ".join(remaining_words).lstrip(" ,.:;!?")
+                return True, clean_extracted_text
 
-        # Optimization: Only process if orchestrator is in a state that expects wake word
-        current_state = self.state_manager.get_state()
-        if current_state not in [AppState.IDLE, AppState.WAITING_FOR_TRIGGER]:
-            return
+        # Buscar si el wakeword está en cualquier parte de la frase (por ejemplo con prefijos de duda)
+        for i in range(len(words)):
+            for n in range(target_word_count, min(len(words) - i + 1, target_word_count + 2)):
+                ngram = " ".join(words[i:i+n])
+                ratio = SequenceMatcher(None, ngram, norm_target).ratio()
+                if ratio >= self.threshold:
+                    orig_words = text.strip().split()
+                    remaining_words = orig_words[i+n:]
+                    clean_extracted_text = " ".join(remaining_words).lstrip(" ,.:;!?")
+                    return True, clean_extracted_text
 
-        try:
-            await self.websocket.send(audio_data)
-        except Exception as e:
-            print(f"[WakeWordService] Error sending audio: {e}")
-            self._connected = False
+        return False, text
+
+wake_word_matcher = DynamicWakeWordMatcher()
