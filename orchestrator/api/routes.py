@@ -242,7 +242,7 @@ async def get_health():
         "stt_provider": pipeline.stt_provider,
         "llm": pipeline.llm_provider is not None,
         "rag": pipeline.rag_service is not None,
-        "microphone_active": pipeline.stream is not None and pipeline.stream.is_active(),
+        "microphone_active": getattr(pipeline, 'stream', None) is not None and pipeline.stream.is_active(),
         "is_speaking": pipeline.is_speaking,
         "is_processing": pipeline.is_processing
     }

@@ -86,6 +86,7 @@ class EnginePipeline:
         self.interaction_mode = INTERACTION_MODE
         self.piper_tts = None
         self.elevenlabs_tts = None
+        self.stream = None
         
         # RAG Local (Lazy Loaded)
         self.rag_service = None
