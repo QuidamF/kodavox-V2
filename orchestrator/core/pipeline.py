@@ -126,6 +126,8 @@ class EnginePipeline:
                     self.vad_pre_padding_seconds = state.get("vad_pre_padding_seconds", float(VAD_PRE_PADDING_SECONDS))
                     self.piper_length_scale = state.get("piper_length_scale", float(PIPER_LENGTH_SCALE) if PIPER_LENGTH_SCALE else 0.85)
                     self.piper_noise_scale = state.get("piper_noise_scale", float(PIPER_NOISE_SCALE) if PIPER_NOISE_SCALE else 0.75)
+                    self.llm_temperature = state.get("llm_temperature", 0.7)
+                    self.rag_strict_mode = state.get("rag_strict_mode", False)
                     self.native_audio_output = state.get("native_audio_output", True)
                     self.robot_face_sync = state.get("robot_face_sync", False)
             else:
@@ -146,6 +148,8 @@ class EnginePipeline:
                 self.vad_pre_padding_seconds = float(VAD_PRE_PADDING_SECONDS)
                 self.piper_length_scale = float(PIPER_LENGTH_SCALE) if PIPER_LENGTH_SCALE else 0.85
                 self.piper_noise_scale = float(PIPER_NOISE_SCALE) if PIPER_NOISE_SCALE else 0.75
+                self.llm_temperature = 0.7
+                self.rag_strict_mode = False
                 self.native_audio_output = True
                 self.robot_face_sync = False
         except Exception as e:
@@ -167,6 +171,8 @@ class EnginePipeline:
             self.vad_pre_padding_seconds = float(VAD_PRE_PADDING_SECONDS)
             self.piper_length_scale = float(PIPER_LENGTH_SCALE) if PIPER_LENGTH_SCALE else 0.85
             self.piper_noise_scale = float(PIPER_NOISE_SCALE) if PIPER_NOISE_SCALE else 0.75
+            self.llm_temperature = 0.7
+            self.rag_strict_mode = False
             self.native_audio_output = True
             self.robot_face_sync = False
 
@@ -201,6 +207,8 @@ class EnginePipeline:
                     "vad_pre_padding_seconds": getattr(self, 'vad_pre_padding_seconds', 0.2),
                     "piper_length_scale": getattr(self, 'piper_length_scale', 0.85),
                     "piper_noise_scale": getattr(self, 'piper_noise_scale', 0.75),
+                    "llm_temperature": getattr(self, 'llm_temperature', 0.7),
+                    "rag_strict_mode": getattr(self, 'rag_strict_mode', False),
                     "native_audio_output": self.native_audio_output,
                     "robot_face_sync": getattr(self, 'robot_face_sync', False)
                 }, f, indent=4)
@@ -474,20 +482,24 @@ class EnginePipeline:
                     self.rag_service = ChromaRAGService()
                 context = await asyncio.to_thread(self.rag_service.get_relevant_context, self.active_rag_collection, text)
                 if context:
-                    print(f"[Pipeline] Contexto RAG recuperado de '{self.active_rag_collection}'")
-                    prompt = f"Utiliza la siguiente información de la Base de Conocimientos para responder a la pregunta del usuario. Si la información no responde la pregunta, usa tu propio conocimiento pero dale prioridad al contexto dado.\n\nContexto:\n{context}\n\nPregunta del Usuario:\n{text}"
+                    print(f"[Pipeline] Contexto RAG recuperado de '{self.active_rag_collection}' (Modo Estricto: {getattr(self, 'rag_strict_mode', False)})")
+                    if getattr(self, 'rag_strict_mode', False):
+                        prompt = f"RESPONDE ÚNICAMENTE usando la siguiente información de la Base de Conocimientos. Si la respuesta no está contenida en el contexto, indica amablemente que no posees esa información en tus datos cargados. NO inventes ni uses tu conocimiento general.\n\nContexto:\n{context}\n\nPregunta del Usuario:\n{text}"
+                    else:
+                        prompt = f"Utiliza la siguiente información de la Base de Conocimientos para responder a la pregunta del usuario. Si la información no responde la pregunta completa, usa tu propio conocimiento pero dale prioridad al contexto dado.\n\nContexto:\n{context}\n\nPregunta del Usuario:\n{text}"
             except Exception as e:
                 print(f"[Pipeline RAG Error] {e}")
 
         self.conversation_history.append({"role": "user", "content": prompt})
         full_response_buffer = []
 
-        print(f"[Pipeline] Pensando con {self.llm_provider.provider_name} ({self.llm_provider.model_name})...")
+        print(f"[Pipeline] Pensando con {self.llm_provider.provider_name} ({self.llm_provider.model_name}) [Temp: {getattr(self, 'llm_temperature', 0.7)}]...")
         
+        temp = getattr(self, 'llm_temperature', 0.7)
         if TTS_PROVIDER == "elevenlabs":
             sentence_buffer = ""
             try:
-                async for token in self.llm_provider.generate_stream(prompt, system_prompt=self.personality_prompt, history=self.conversation_history[:-1]):
+                async for token in self.llm_provider.generate_stream(prompt, system_prompt=self.personality_prompt, history=self.conversation_history[:-1], temperature=temp):
                     if token:
                         await self.emit_telemetry('telemetry_llm', {"token": token, "provider": self.llm_provider.provider_name})
                         sentence_buffer += token
@@ -505,7 +517,7 @@ class EnginePipeline:
         else:
             sentence_buffer = ""
             try:
-                async for token in self.llm_provider.generate_stream(prompt, system_prompt=self.personality_prompt, history=self.conversation_history[:-1]):
+                async for token in self.llm_provider.generate_stream(prompt, system_prompt=self.personality_prompt, history=self.conversation_history[:-1], temperature=temp):
                     if token:
                         await self.emit_telemetry('telemetry_llm', {"token": token, "provider": self.llm_provider.provider_name})
                         sentence_buffer += token

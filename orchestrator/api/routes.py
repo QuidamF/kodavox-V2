@@ -70,14 +70,24 @@ async def upload_document(collection: str = Form(...), file: UploadFile = File(.
 @router.get("/api/config/personality")
 async def get_personality():
     from main import pipeline
-    return {"personality_prompt": pipeline.personality_prompt}
+    return {
+        "personality_prompt": pipeline.personality_prompt,
+        "llm_temperature": getattr(pipeline, 'llm_temperature', 0.7),
+        "rag_strict_mode": getattr(pipeline, 'rag_strict_mode', False)
+    }
 
 @router.post("/api/config/personality")
-async def set_personality(prompt: str = Body(..., embed=True)):
+async def set_personality(payload: dict = Body(...)):
     from main import pipeline
-    pipeline.personality_prompt = prompt
+    if "personality_prompt" in payload:
+        pipeline.personality_prompt = payload["personality_prompt"]
+    if "llm_temperature" in payload:
+        pipeline.llm_temperature = float(payload["llm_temperature"])
+    if "rag_strict_mode" in payload:
+        pipeline.rag_strict_mode = bool(payload["rag_strict_mode"])
+        
     pipeline._save_engine_state()
-    return {"message": "Personalidad actualizada"}
+    return {"message": "Configuración de personalidad actualizada"}
 
 @router.post("/api/config/voices/clone")
 async def clone_voice(name: str = Form(...), file: UploadFile = File(...)):

@@ -34,6 +34,8 @@ function App() {
 
   // Config States
   const [personalityPrompt, setPersonalityPrompt] = useState("");
+  const [llmTemperature, setLlmTemperature] = useState(0.7);
+  const [ragStrictMode, setRagStrictMode] = useState(false);
   const [elevenlabsVoices, setElevenlabsVoices] = useState([]);
   const [activeVoiceId, setActiveVoiceId] = useState("");
   const [newVoiceName, setNewVoiceName] = useState("");
@@ -92,6 +94,8 @@ function App() {
       if (resP.ok) {
         const data = await resP.json();
         setPersonalityPrompt(data.personality_prompt);
+        if (data.llm_temperature !== undefined) setLlmTemperature(data.llm_temperature);
+        if (data.rag_strict_mode !== undefined) setRagStrictMode(data.rag_strict_mode);
       }
       const resV = await fetch(`${API_URL}/config/voices`);
       if (resV.ok) {
@@ -260,9 +264,13 @@ function App() {
       await fetch(`${API_URL}/config/personality`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ prompt: personalityPrompt })
+        body: JSON.stringify({
+          personality_prompt: personalityPrompt,
+          llm_temperature: llmTemperature,
+          rag_strict_mode: ragStrictMode
+        })
       });
-      alert("Personalidad guardada exitosamente");
+      alert("Personalidad y parámetros de IA guardados exitosamente");
     } catch (e) {
       console.error(e);
     }
@@ -683,15 +691,68 @@ function App() {
                   </div>
                 </div>
                 
-                <form onSubmit={handleSavePersonality} className="flex flex-col flex-1">
-                  <textarea
-                    className="flex-1 bg-slate-950 border border-slate-800 rounded-xl p-5 text-slate-200 outline-none focus:border-pink-500 focus:ring-1 focus:ring-pink-500/50 mb-6 resize-y transition-all"
-                    value={personalityPrompt}
-                    onChange={(e) => setPersonalityPrompt(e.target.value)}
-                    placeholder="Ej: Eres un asistente virtual sarcástico y muy útil..."
-                  />
+                <form onSubmit={handleSavePersonality} className="flex flex-col flex-1 space-y-6">
+                  <div className="flex flex-col">
+                    <label className="text-sm font-medium text-slate-300 mb-2">Instrucciones del Sistema (System Prompt)</label>
+                    <textarea
+                      className="bg-slate-950 border border-slate-800 rounded-xl p-5 text-slate-200 outline-none focus:border-pink-500 focus:ring-1 focus:ring-pink-500/50 min-h-[140px] resize-y transition-all"
+                      value={personalityPrompt}
+                      onChange={(e) => setPersonalityPrompt(e.target.value)}
+                      placeholder="Ej: Eres un asistente virtual amigable, experto en ciencia y muy breve..."
+                    />
+                  </div>
+
+                  {/* Parámetros de Comportamiento e Inteligencia */}
+                  <div className="bg-slate-950 p-6 rounded-xl border border-slate-800 space-y-6">
+                    <h3 className="font-semibold text-slate-200 border-b border-slate-800 pb-3 flex items-center gap-2">
+                      <Cpu size={18} className="text-pink-400" /> Parámetros de Creatividad y Respuestas RAG
+                    </h3>
+
+                    {/* Temperatura LLM */}
+                    <div className="space-y-3">
+                      <div className="flex justify-between items-center">
+                        <label className="text-sm font-medium text-slate-300">
+                          Temperatura LLM (Creatividad): <span className="text-pink-400 font-mono font-bold">{llmTemperature.toFixed(2)}</span>
+                        </label>
+                        <span className="text-xs px-2.5 py-1 rounded-full bg-slate-900 border border-slate-800 text-slate-400">
+                          {llmTemperature < 0.3 ? '🎯 Factual & Estricto' : llmTemperature > 0.7 ? '🎨 Creativo & Variado' : '⚖️ Equilibrado'}
+                        </span>
+                      </div>
+                      <input 
+                        type="range" min="0.0" max="1.0" step="0.05"
+                        value={llmTemperature}
+                        onChange={(e) => setLlmTemperature(parseFloat(e.target.value))}
+                        className="w-full h-2 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-pink-500"
+                      />
+                      <div className="flex justify-between text-[11px] text-slate-500">
+                        <span>0.0 (Factual / Manuales)</span>
+                        <span>0.5 (Conversación Natural)</span>
+                        <span>1.0 (Máxima Invención/Estilo)</span>
+                      </div>
+                    </div>
+
+                    {/* Modo RAG Estricto */}
+                    <div className="flex items-center justify-between pt-3 border-t border-slate-800/60">
+                      <div>
+                        <h4 className="font-medium text-slate-200 text-sm">Modo RAG Estricto (Solo Base de Conocimiento)</h4>
+                        <p className="text-xs text-slate-400 mt-1 max-w-xl">
+                          Si está activo, el LLM responderá **únicamente** usando datos recuperados de tus colecciones RAG, evitando apoyarse en su conocimiento general o inventar respuestas fuera del contexto.
+                        </p>
+                      </div>
+                      <label className="relative inline-flex items-center cursor-pointer ml-4">
+                        <input 
+                          type="checkbox" 
+                          className="sr-only peer" 
+                          checked={ragStrictMode} 
+                          onChange={(e) => setRagStrictMode(e.target.checked)} 
+                        />
+                        <div className="w-11 h-6 bg-slate-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-pink-500"></div>
+                      </label>
+                    </div>
+                  </div>
+
                   <button type="submit" className="bg-pink-600 hover:bg-pink-500 text-white px-6 py-3 rounded-xl font-medium transition-colors self-end flex items-center gap-2 shadow-lg shadow-pink-500/20">
-                    Guardar Personalidad
+                    Guardar Personalidad & Parámetros
                   </button>
                 </form>
               </div>

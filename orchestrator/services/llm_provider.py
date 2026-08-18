@@ -17,7 +17,7 @@ class BaseLLMProvider(ABC):
 
     @abstractmethod
     async def generate_stream(
-        self, prompt: str, system_prompt: str = DEFAULT_SYSTEM_PROMPT, history: list = None
+        self, prompt: str, system_prompt: str = DEFAULT_SYSTEM_PROMPT, history: list = None, temperature: float = 0.7
     ) -> AsyncGenerator[str, None]:
         """Genera una respuesta en streaming token a token."""
         yield ""
@@ -33,7 +33,7 @@ class OllamaProvider(BaseLLMProvider):
         self.url = f"{host}/api/generate"
 
     async def generate_stream(
-        self, prompt: str, system_prompt: str = DEFAULT_SYSTEM_PROMPT, history: list = None
+        self, prompt: str, system_prompt: str = DEFAULT_SYSTEM_PROMPT, history: list = None, temperature: float = 0.7
     ) -> AsyncGenerator[str, None]:
         history = history or []
         history_text = "\n".join([f"{msg['role'].capitalize()}: {msg['content']}" for msg in history])
@@ -45,6 +45,7 @@ class OllamaProvider(BaseLLMProvider):
             "model": self.model_name,
             "prompt": full_prompt,
             "stream": True,
+            "options": {"temperature": temperature}
         }
 
         try:
@@ -75,7 +76,7 @@ class OpenAIProvider(BaseLLMProvider):
         self.url = "https://api.openai.com/v1/chat/completions"
 
     async def generate_stream(
-        self, prompt: str, system_prompt: str = DEFAULT_SYSTEM_PROMPT, history: list = None
+        self, prompt: str, system_prompt: str = DEFAULT_SYSTEM_PROMPT, history: list = None, temperature: float = 0.7
     ) -> AsyncGenerator[str, None]:
         if not self.api_key:
             print("[LLM Error - OpenAI] OPENAI_API_KEY no configurada.")
@@ -96,6 +97,7 @@ class OpenAIProvider(BaseLLMProvider):
         payload = {
             "model": self.model_name,
             "messages": messages,
+            "temperature": temperature,
             "stream": True,
             "stream_options": {"include_usage": True}
         }
@@ -151,7 +153,7 @@ class GeminiProvider(BaseLLMProvider):
         self.api_key = os.getenv("GEMINI_API_KEY", "")
 
     async def generate_stream(
-        self, prompt: str, system_prompt: str = DEFAULT_SYSTEM_PROMPT, history: list = None
+        self, prompt: str, system_prompt: str = DEFAULT_SYSTEM_PROMPT, history: list = None, temperature: float = 0.7
     ) -> AsyncGenerator[str, None]:
         if not self.api_key:
             print("[LLM Error - Gemini] GEMINI_API_KEY no configurada.")
@@ -176,6 +178,7 @@ class GeminiProvider(BaseLLMProvider):
                 contents=contents,
                 config=types.GenerateContentConfig(
                     system_instruction=system_prompt,
+                    temperature=temperature
                 )
             )
             
