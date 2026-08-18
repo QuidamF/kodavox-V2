@@ -279,7 +279,7 @@ function App() {
       await fetch(`${API_URL}/config/voices/active`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ voice_id: id })
+        body: JSON.stringify({ id: id })
       });
       fetchConfig();
     } catch (e) {
