@@ -130,6 +130,7 @@ class EnginePipeline:
                     self.rag_strict_mode = state.get("rag_strict_mode", False)
                     self.native_audio_output = state.get("native_audio_output", True)
                     self.robot_face_sync = state.get("robot_face_sync", False)
+                    self.enabled = state.get("enabled", True)
             else:
                 self.active_rag_collection = os.getenv("RAG_ACTIVE_COLLECTION", "")
                 self.personality_prompt = DEFAULT_SYSTEM_PROMPT
@@ -152,6 +153,7 @@ class EnginePipeline:
                 self.rag_strict_mode = False
                 self.native_audio_output = True
                 self.robot_face_sync = False
+                self.enabled = True
         except Exception as e:
             print(f"[Pipeline] Error cargando estado: {e}")
             self.active_rag_collection = os.getenv("RAG_ACTIVE_COLLECTION", "")
@@ -210,7 +212,8 @@ class EnginePipeline:
                     "llm_temperature": getattr(self, 'llm_temperature', 0.7),
                     "rag_strict_mode": getattr(self, 'rag_strict_mode', False),
                     "native_audio_output": self.native_audio_output,
-                    "robot_face_sync": getattr(self, 'robot_face_sync', False)
+                    "robot_face_sync": getattr(self, 'robot_face_sync', False),
+                    "enabled": getattr(self, 'enabled', True)
                 }, f, indent=4)
         except Exception as e:
             print(f"[Pipeline] Error guardando estado: {e}")
@@ -255,18 +258,20 @@ class EnginePipeline:
         self.engine_state = new_state
         await self.emit_telemetry('telemetry_state', {
             "state": self.engine_state,
-            "session_active": self.wake_session_active
+            "session_active": self.wake_session_active,
+            "enabled": getattr(self, 'enabled', True)
         })
         
         if getattr(self, 'robot_face_sync', False):
             mood_map = {
+                "disabled": "Dormido",
                 "idle": "Alerta" if self.wake_session_active else "Neutral",
                 "listening": "Escuchando",
                 "processing": "Pensando",
                 "wakeword_detected": "Sorprendido",
                 "speaking": "Feliz"
             }
-            mood = mood_map.get(new_state, "Neutral")
+            mood = mood_map.get(new_state, "Dormido" if not getattr(self, "enabled", True) else "Neutral")
             try:
                 asyncio.create_task(self._send_robot_face_mood(mood))
             except Exception:
@@ -281,6 +286,12 @@ class EnginePipeline:
             pass
 
     def audio_callback(self, in_data, frame_count, time_info, status):
+        if not getattr(self, 'enabled', True):
+            if self.loop:
+                self.loop.call_soon_threadsafe(
+                    lambda: asyncio.create_task(self.emit_telemetry('telemetry_mic', {"energy": 0}))
+                )
+            return (in_data, pyaudio.paContinue)
         if self.is_speaking or self.is_processing:
             if self.loop:
                 self.loop.call_soon_threadsafe(

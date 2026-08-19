@@ -244,6 +244,7 @@ async def get_hardware():
     return {
         "native_audio_output": getattr(pipeline, 'native_audio_output', True),
         "robot_face_sync": getattr(pipeline, 'robot_face_sync', False),
+        "enabled": getattr(pipeline, 'enabled', True),
         "cost_rates": getattr(pipeline, 'cost_rates', {"openai": 0.15, "gemini": 0.0, "elevenlabs": 15.0})
     }
 
@@ -254,11 +255,31 @@ async def set_hardware(payload: dict = Body(...)):
         pipeline.native_audio_output = payload["native_audio_output"]
     if "robot_face_sync" in payload:
         pipeline.robot_face_sync = payload["robot_face_sync"]
+    if "enabled" in payload:
+        pipeline.enabled = bool(payload["enabled"])
+        if not pipeline.enabled:
+            asyncio.create_task(pipeline._set_engine_state("disabled"))
+        else:
+            asyncio.create_task(pipeline._set_engine_state("idle"))
     if "cost_rates" in payload:
         pipeline.cost_rates = payload["cost_rates"]
         
     pipeline._save_engine_state()
     return {"message": "Configuración actualizada exitosamente"}
+
+@router.post("/api/engine/toggle")
+async def toggle_engine(payload: dict = Body(...)):
+    from main import pipeline
+    if "enabled" in payload:
+        pipeline.enabled = bool(payload["enabled"])
+        pipeline._save_engine_state()
+        state_str = "activado" if pipeline.enabled else "desactivado (muted)"
+        if not pipeline.enabled:
+            asyncio.create_task(pipeline._set_engine_state("disabled"))
+        else:
+            asyncio.create_task(pipeline._set_engine_state("idle"))
+        return {"enabled": pipeline.enabled, "message": f"KodaVox {state_str}"}
+    return {"enabled": getattr(pipeline, 'enabled', True)}
 
 @router.post("/api/tts/test")
 async def test_tts(payload: dict = Body(...)):

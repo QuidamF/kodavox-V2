@@ -81,6 +81,7 @@ function App() {
   const [isCheckingHealth, setIsCheckingHealth] = useState(false);
   const [nativeAudioOutput, setNativeAudioOutput] = useState(true);
   const [robotFaceSync, setRobotFaceSync] = useState(false);
+  const [engineEnabled, setEngineEnabled] = useState(true);
 
   // Credentials Setup Wizard
   const [credentialsStatus, setCredentialsStatus] = useState(null);
@@ -153,6 +154,7 @@ function App() {
         const data = await resH.json();
         setNativeAudioOutput(data.native_audio_output);
         setRobotFaceSync(data.robot_face_sync);
+        setEngineEnabled(data.enabled ?? true);
         if (data.cost_rates) {
           setCostRates(data.cost_rates);
           localStorage.setItem("kodavox_costs", JSON.stringify(data.cost_rates));
@@ -160,6 +162,21 @@ function App() {
       }
     } catch (e) {
       console.error("Error fetching config:", e);
+    }
+  };
+
+  const handleToggleEngine = async () => {
+    const nextState = !engineEnabled;
+    setEngineEnabled(nextState);
+    try {
+      await fetch(`${API_URL}/engine/toggle`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ enabled: nextState })
+      });
+    } catch (e) {
+      console.error(e);
+      setEngineEnabled(!nextState);
     }
   };
 
@@ -666,9 +683,33 @@ function App() {
           </h1>
           <p className="text-slate-400 mt-1 text-xs md:text-sm">Dashboard & Configuration Center</p>
         </div>
-        <div className={`px-4 py-2 rounded-full font-medium flex items-center gap-2 text-sm ${connected ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' : 'bg-red-500/10 text-red-400 border border-red-500/20'}`}>
-          <div className={`w-2 h-2 rounded-full ${connected ? 'bg-emerald-400 animate-pulse' : 'bg-red-400'}`}></div>
-          {connected ? 'Motor Conectado' : 'Esperando Motor...'}
+        <div className="flex items-center gap-3">
+          <button
+            onClick={handleToggleEngine}
+            className={`px-4 py-2 rounded-full font-semibold flex items-center gap-2 text-xs md:text-sm transition-all shadow-md cursor-pointer ${
+              engineEnabled
+                ? 'bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-300 border border-emerald-500/40 shadow-emerald-950/20'
+                : 'bg-rose-600/20 hover:bg-rose-600/30 text-rose-300 border border-rose-500/40 shadow-rose-950/40'
+            }`}
+            title={engineEnabled ? "Desactivar / Mutear KodaVox" : "Activar / Encender KodaVox"}
+          >
+            {engineEnabled ? (
+              <>
+                <Mic size={16} className="text-emerald-400" />
+                <span>KodaVox Activo</span>
+              </>
+            ) : (
+              <>
+                <MicOff size={16} className="text-rose-400" />
+                <span>KodaVox Apagado (Muted)</span>
+              </>
+            )}
+          </button>
+
+          <div className={`px-4 py-2 rounded-full font-medium flex items-center gap-2 text-xs md:text-sm ${connected ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' : 'bg-red-500/10 text-red-400 border border-red-500/20'}`}>
+            <div className={`w-2 h-2 rounded-full ${connected ? 'bg-emerald-400 animate-pulse' : 'bg-red-400'}`}></div>
+            {connected ? 'Motor Conectado' : 'Esperando Motor...'}
+          </div>
         </div>
       </header>
 
