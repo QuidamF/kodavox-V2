@@ -1,7 +1,8 @@
 import os
 import json
 
-CREDENTIALS_FILE = "data/credentials.json"
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+CREDENTIALS_FILE = os.path.join(BASE_DIR, "data", "credentials.json")
 
 def load_credentials():
     """Carga credenciales desde el archivo a os.environ si existen."""
@@ -11,7 +12,7 @@ def load_credentials():
                 creds = json.load(f)
                 for key, value in creds.items():
                     if value:  # Solo cargar si no está vacío
-                        os.environ[key] = value
+                        os.environ[key] = str(value).strip()
         except Exception as e:
             print(f"[Credentials] Error al cargar {CREDENTIALS_FILE}: {e}")
 
@@ -29,8 +30,9 @@ def save_credentials(keys_dict: dict):
     # Actualizar con los nuevos valores
     for k, v in keys_dict.items():
         if v:
-            creds[k] = v
-            os.environ[k] = v
+            clean_v = str(v).strip()
+            creds[k] = clean_v
+            os.environ[k] = clean_v
 
     # Crear el directorio data/ si no existe
     os.makedirs(os.path.dirname(CREDENTIALS_FILE), exist_ok=True)
