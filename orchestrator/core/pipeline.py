@@ -337,6 +337,9 @@ class EnginePipeline:
                             )
                         else:
                             print("[Pipeline] Audio descartado: voz demasiado corta para STT.")
+                            self.loop.call_soon_threadsafe(
+                                lambda: asyncio.create_task(self._set_engine_state("idle"))
+                            )
                         self.audio_buffer = []
                         self.silence_samples = 0
                         self.speech_samples = 0
@@ -400,7 +403,6 @@ class EnginePipeline:
                         self._schedule_wake_session_timeout()
                         print(f"[Pipeline] Wake word detectada. Esperando consulta: {self.wake_word}.", flush=True)
                         await asyncio.sleep(0.4)
-                        await self._set_engine_state("idle")
                         return
 
             print(f"[Usuario]: {text}")
@@ -409,6 +411,8 @@ class EnginePipeline:
             await self.ask_llm(text)
         finally:
             self.is_processing = False
+            if not self.is_speaking:
+                await self._set_engine_state("idle")
 
     def _contains_wake_word(self, text: str) -> bool:
         from services.wake_word import wake_word_matcher
@@ -453,99 +457,98 @@ class EnginePipeline:
         await self._set_engine_state("idle")
 
     async def ask_llm(self, text: str):
-        self.is_speaking = True 
-        
-        # 1. Verificación de Redis Cache
+        self.is_speaking = True
+        await self._set_engine_state("speaking")
         try:
-            from services.redis_cache import redis_cache
-            cached_data = redis_cache.get(text)
-            if cached_data:
-                cached_text = cached_data.get("text", "")
-                await self.emit_telemetry('telemetry_llm', {"token": cached_text, "provider": "Redis Cache"})
-                self.conversation_history.append({"role": "user", "content": text})
-                self.conversation_history.append({"role": "assistant", "content": cached_text})
-                await self.play_tts(cached_text)
-                await asyncio.sleep(0.5)
-                self.is_speaking = False
-                if self.wake_session_active:
-                    self._schedule_wake_session_timeout()
-                return
-        except Exception as cache_err:
-            print(f"[Redis Cache Error] {cache_err}")
-
-        # 2. Contexto RAG
-        prompt = text
-        if self.active_rag_collection:
-            try:
-                if self.rag_service is None:
-                    from services.rag_chroma import ChromaRAGService
-                    self.rag_service = ChromaRAGService()
-                context = await asyncio.to_thread(self.rag_service.get_relevant_context, self.active_rag_collection, text)
-                if context:
-                    print(f"[Pipeline] Contexto RAG recuperado de '{self.active_rag_collection}' (Modo Estricto: {getattr(self, 'rag_strict_mode', False)})")
-                    if getattr(self, 'rag_strict_mode', False):
-                        prompt = f"RESPONDE ÚNICAMENTE usando la siguiente información de la Base de Conocimientos. Si la respuesta no está contenida en el contexto, indica amablemente que no posees esa información en tus datos cargados. NO inventes ni uses tu conocimiento general.\n\nContexto:\n{context}\n\nPregunta del Usuario:\n{text}"
-                    else:
-                        prompt = f"Utiliza la siguiente información de la Base de Conocimientos para responder a la pregunta del usuario. Si la información no responde la pregunta completa, usa tu propio conocimiento pero dale prioridad al contexto dado.\n\nContexto:\n{context}\n\nPregunta del Usuario:\n{text}"
-            except Exception as e:
-                print(f"[Pipeline RAG Error] {e}")
-
-        self.conversation_history.append({"role": "user", "content": prompt})
-        full_response_buffer = []
-
-        print(f"[Pipeline] Pensando con {self.llm_provider.provider_name} ({self.llm_provider.model_name}) [Temp: {getattr(self, 'llm_temperature', 0.7)}]...")
-        
-        temp = getattr(self, 'llm_temperature', 0.7)
-        if TTS_PROVIDER == "elevenlabs":
-            sentence_buffer = ""
-            try:
-                async for token in self.llm_provider.generate_stream(prompt, system_prompt=self.personality_prompt, history=self.conversation_history[:-1], temperature=temp):
-                    if token:
-                        await self.emit_telemetry('telemetry_llm', {"token": token, "provider": self.llm_provider.provider_name})
-                        sentence_buffer += token
-                        full_response_buffer.append(token)
-                        if any(char in token for char in ['.', '!', '?', '\n']):
-                            cleaned_sentence = sentence_buffer.strip()
-                            if cleaned_sentence:
-                                await self.play_elevenlabs_tts(cleaned_sentence)
-                            sentence_buffer = ""
-            except Exception as error:
-                print(f"[Pipeline LLM Error] {error}", flush=True)
-                
-            if sentence_buffer.strip():
-                await self.play_elevenlabs_tts(sentence_buffer.strip())
-        else:
-            sentence_buffer = ""
-            try:
-                async for token in self.llm_provider.generate_stream(prompt, system_prompt=self.personality_prompt, history=self.conversation_history[:-1], temperature=temp):
-                    if token:
-                        await self.emit_telemetry('telemetry_llm', {"token": token, "provider": self.llm_provider.provider_name})
-                        sentence_buffer += token
-                        full_response_buffer.append(token)
-                        if any(char in token for char in ['.', '!', '?', '\n']):
-                            await self.play_tts(sentence_buffer.strip())
-                            sentence_buffer = ""
-            except Exception as error:
-                print(f"[Pipeline LLM Error] {error}")
-                
-            if sentence_buffer.strip():
-                await self.play_tts(sentence_buffer.strip())
-
-        final_assistant_text = "".join(full_response_buffer)
-        self.conversation_history.append({"role": "assistant", "content": final_assistant_text})
-
-        if final_assistant_text.strip():
+            # 1. Verificación de Redis Cache
             try:
                 from services.redis_cache import redis_cache
-                redis_cache.set(text, final_assistant_text)
+                cached_data = redis_cache.get(text)
+                if cached_data:
+                    cached_text = cached_data.get("text", "")
+                    await self.emit_telemetry('telemetry_llm', {"token": cached_text, "provider": "Redis Cache"})
+                    self.conversation_history.append({"role": "user", "content": text})
+                    self.conversation_history.append({"role": "assistant", "content": cached_text})
+                    await self.play_tts(cached_text)
+                    await asyncio.sleep(0.5)
+                    return
             except Exception as cache_err:
-                print(f"[Redis Cache Store Error] {cache_err}", flush=True)
+                print(f"[Redis Cache Error] {cache_err}")
 
-        await asyncio.sleep(0.5)
-        self.is_speaking = False
-        
-        if self.wake_session_active:
-            self._schedule_wake_session_timeout()
+            # 2. Contexto RAG
+            prompt = text
+            if self.active_rag_collection:
+                try:
+                    if self.rag_service is None:
+                        from services.rag_chroma import ChromaRAGService
+                        self.rag_service = ChromaRAGService()
+                    context = await asyncio.to_thread(self.rag_service.get_relevant_context, self.active_rag_collection, text)
+                    if context:
+                        print(f"[Pipeline] Contexto RAG recuperado de '{self.active_rag_collection}' (Modo Estricto: {getattr(self, 'rag_strict_mode', False)})")
+                        if getattr(self, 'rag_strict_mode', False):
+                            prompt = f"RESPONDE ÚNICAMENTE usando la siguiente información de la Base de Conocimientos. Si la respuesta no está contenida en el contexto, indica amablemente que no posees esa información en tus datos cargados. NO inventes ni uses tu conocimiento general.\n\nContexto:\n{context}\n\nPregunta del Usuario:\n{text}"
+                        else:
+                            prompt = f"Utiliza la siguiente información de la Base de Conocimientos para responder a la pregunta del usuario. Si la información no responde la pregunta completa, usa tu propio conocimiento pero dale prioridad al contexto dado.\n\nContexto:\n{context}\n\nPregunta del Usuario:\n{text}"
+                except Exception as e:
+                    print(f"[Pipeline RAG Error] {e}")
+
+            self.conversation_history.append({"role": "user", "content": prompt})
+            full_response_buffer = []
+
+            print(f"[Pipeline] Pensando con {self.llm_provider.provider_name} ({self.llm_provider.model_name}) [Temp: {getattr(self, 'llm_temperature', 0.7)}]...")
+            
+            temp = getattr(self, 'llm_temperature', 0.7)
+            if TTS_PROVIDER == "elevenlabs":
+                sentence_buffer = ""
+                try:
+                    async for token in self.llm_provider.generate_stream(prompt, system_prompt=self.personality_prompt, history=self.conversation_history[:-1], temperature=temp):
+                        if token:
+                            await self.emit_telemetry('telemetry_llm', {"token": token, "provider": self.llm_provider.provider_name})
+                            sentence_buffer += token
+                            full_response_buffer.append(token)
+                            if any(char in token for char in ['.', '!', '?', '\n']):
+                                cleaned_sentence = sentence_buffer.strip()
+                                if cleaned_sentence:
+                                    await self.play_elevenlabs_tts(cleaned_sentence)
+                                sentence_buffer = ""
+                except Exception as error:
+                    print(f"[Pipeline LLM Error] {error}", flush=True)
+                    
+                if sentence_buffer.strip():
+                    await self.play_elevenlabs_tts(sentence_buffer.strip())
+            else:
+                sentence_buffer = ""
+                try:
+                    async for token in self.llm_provider.generate_stream(prompt, system_prompt=self.personality_prompt, history=self.conversation_history[:-1], temperature=temp):
+                        if token:
+                            await self.emit_telemetry('telemetry_llm', {"token": token, "provider": self.llm_provider.provider_name})
+                            sentence_buffer += token
+                            full_response_buffer.append(token)
+                            if any(char in token for char in ['.', '!', '?', '\n']):
+                                await self.play_tts(sentence_buffer.strip())
+                                sentence_buffer = ""
+                except Exception as error:
+                    print(f"[Pipeline LLM Error] {error}")
+                    
+                if sentence_buffer.strip():
+                    await self.play_tts(sentence_buffer.strip())
+
+            final_assistant_text = "".join(full_response_buffer)
+            self.conversation_history.append({"role": "assistant", "content": final_assistant_text})
+
+            if final_assistant_text.strip():
+                try:
+                    from services.redis_cache import redis_cache
+                    redis_cache.set(text, final_assistant_text)
+                except Exception as cache_err:
+                    print(f"[Redis Cache Store Error] {cache_err}", flush=True)
+
+            await asyncio.sleep(0.5)
+        finally:
+            self.is_speaking = False
+            await self._set_engine_state("idle")
+            if self.wake_session_active:
+                self._schedule_wake_session_timeout()
 
     async def play_tts(self, text: str):
         if not text or TTS_PROVIDER == "off":
