@@ -31,7 +31,7 @@ if [ ! -f ".env" ]; then
         echo ""
         echo "¿Qué tipo de instalación deseas?"
         echo "1) Full (Local): Requiere más RAM/GPU. Todo corre en tu máquina (Ollama, Whisper, Piper)."
-        echo "2) Minimal (Nube): Muy rápido, requiere bajo hardware. Usa APIs externas (Gemini, ElevenLabs)."
+        echo "2) Minimal (Nube): Muy rápido, requiere bajo hardware. Usa APIs externas (OpenAI, ElevenLabs)."
         echo "3) Personalizado: Preguntar módulo por módulo."
         echo -n "Selecciona una opción (1/2/3) [3]: "
         read -r install_type
@@ -42,7 +42,7 @@ if [ ! -f ".env" ]; then
             sed -i 's/^TTS_PROVIDER=.*/TTS_PROVIDER=piper/' .env
             echo "   -> Perfil Full (Local) aplicado."
         elif [ "$install_type" = "2" ]; then
-            sed -i 's/^LLM_PROVIDER=.*/LLM_PROVIDER=gemini/' .env
+            sed -i 's/^LLM_PROVIDER=.*/LLM_PROVIDER=openai/' .env
             sed -i 's/^STT_PROVIDER=.*/STT_PROVIDER=elevenlabs/' .env
             sed -i 's/^TTS_PROVIDER=.*/TTS_PROVIDER=elevenlabs/' .env
             echo "   -> Perfil Minimal (Nube) aplicado."
