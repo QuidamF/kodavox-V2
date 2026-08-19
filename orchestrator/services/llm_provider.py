@@ -78,13 +78,14 @@ class OpenAIProvider(BaseLLMProvider):
     async def generate_stream(
         self, prompt: str, system_prompt: str = DEFAULT_SYSTEM_PROMPT, history: list = None, temperature: float = 0.7
     ) -> AsyncGenerator[str, None]:
-        if not self.api_key:
+        api_key = os.getenv("OPENAI_API_KEY", "").strip() or self.api_key
+        if not api_key:
             print("[LLM Error - OpenAI] OPENAI_API_KEY no configurada.")
             yield "Error: OPENAI_API_KEY no está configurada en las variables de entorno."
             return
 
         headers = {
-            "Authorization": f"Bearer {self.api_key}",
+            "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
         }
         
@@ -155,7 +156,8 @@ class GeminiProvider(BaseLLMProvider):
     async def generate_stream(
         self, prompt: str, system_prompt: str = DEFAULT_SYSTEM_PROMPT, history: list = None, temperature: float = 0.7
     ) -> AsyncGenerator[str, None]:
-        if not self.api_key:
+        api_key = os.getenv("GEMINI_API_KEY", "").strip() or self.api_key
+        if not api_key:
             print("[LLM Error - Gemini] GEMINI_API_KEY no configurada.")
             yield "Error: GEMINI_API_KEY no está configurada en las variables de entorno."
             return
@@ -164,7 +166,7 @@ class GeminiProvider(BaseLLMProvider):
             from google import genai
             from google.genai import types
             
-            client = genai.Client(api_key=self.api_key)
+            client = genai.Client(api_key=api_key)
             
             history = history or []
             contents = []
