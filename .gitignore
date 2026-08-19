@@ -29,6 +29,15 @@ wheels/
 
 # Archivos de Datos y Modelos (IA)
 # Evitamos subir GBs de modelos a GitHub
+*.onnx
+*.pt
+*.pth
+*.safetensors
+*.gguf
+*.h5
+*.pkl
+*.tflite
+*.pb
 services/stt/models/
 services/tts/voices/*.wav
 services/tts/tts_models/

@@ -212,19 +212,48 @@ fi
 
 export VITE_ENGINE_PORT="$ENGINE_PORT"
 echo "[2/4] Configurando Motor Monolítico..."
+
+# Instalar dependencias del sistema (PortAudio y FFmpeg) si es necesario para PyAudio
+if command -v apt-get &> /dev/null; then
+    if ! dpkg -s portaudio19-dev &> /dev/null || ! dpkg -s ffmpeg &> /dev/null; then
+        echo "   -> Instalando dependencias del sistema (PortAudio y FFmpeg)..."
+        sudo apt-get update && sudo apt-get install -y portaudio19-dev ffmpeg
+    fi
+elif command -v brew &> /dev/null; then
+    if ! brew ls --versions portaudio &> /dev/null || ! brew ls --versions ffmpeg &> /dev/null; then
+        echo "   -> Instalando dependencias del sistema (PortAudio y FFmpeg) vía Homebrew..."
+        brew install portaudio ffmpeg
+    fi
+fi
+
 cd orchestrator
 if [ ! -d "venv" ]; then
     echo "   -> Creando entorno virtual Python (venv)..."
     python3 -m venv venv
 fi
 source venv/bin/activate
-    if [ ! -f ".requirements.md5" ] || ! md5sum -c .requirements.md5 &>/dev/null; then
-        echo -n "   -> Instalando/Verificando dependencias de Python (esto puede tomar varios minutos)"
-        pip install -q -r requirements.txt &
+
+# Determinar archivos de requerimientos a instalar
+REQ_FILES="requirements.txt"
+if [ "$STT_PROVIDER" = "whisper" ] || [ "$TTS_PROVIDER" = "piper" ]; then
+    REQ_FILES="requirements.txt requirements-ml.txt"
+fi
+
+if [ ! -f ".requirements.md5" ] || ! md5sum -c .requirements.md5 &>/dev/null; then
+    echo -n "   -> Instalando/Verificando dependencias de Python Base..."
+    pip install --default-timeout=1000 -q -r requirements.txt &
+    show_spinner $!
+    
+    if [[ "$REQ_FILES" == *"requirements-ml.txt"* ]]; then
+        echo ""
+        echo -n "   -> Instalando dependencias pesadas de IA Local (Torch, Whisper, etc.)..."
+        pip install --default-timeout=1000 -q -r requirements-ml.txt &
         show_spinner $!
-        md5sum requirements.txt > .requirements.md5
-        echo " ¡Listo!"
     fi
+    
+    md5sum $REQ_FILES > .requirements.md5
+    echo " ¡Listo!"
+fi
 
 echo "[3/4] Iniciando main.py (Modular Core) en el puerto $ENGINE_PORT..."
 # Corremos el motor mostrando salida en tiempo real

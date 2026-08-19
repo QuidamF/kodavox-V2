@@ -8,7 +8,7 @@ def check_http_service(name, url):
     print(f"[*] Checking {name} at {url}...", end=" ")
     try:
         # Intentar una petición simple o GET /
-        response = requests.get(url.replace("/ask", "/").replace("/api/tts/stream", "/"), timeout=3)
+        response = requests.get(url.replace("/ask", "/").replace("/api/tts/stream", "/"), timeout=10)
         if response.status_code < 500:
             print("✅ ONLINE")
             return True
@@ -21,7 +21,7 @@ def check_http_service(name, url):
 async def check_ws_service(name, url):
     print(f"[*] Checking {name} at {url}...", end=" ")
     try:
-        async with websockets.connect(url, open_timeout=3) as ws:
+        async with websockets.connect(url, open_timeout=10) as ws:
             print("✅ ONLINE")
             return True
     except Exception as e:

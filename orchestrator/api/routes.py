@@ -319,7 +319,7 @@ async def get_providers_status():
                 res = await client.get(
                     "https://api.elevenlabs.io/v1/models",
                     headers={"xi-api-key": el_key},
-                    timeout=5.0
+                    timeout=15.0
                 )
                 if res.status_code == 200:
                     status["elevenlabs"] = {
@@ -351,7 +351,7 @@ async def get_providers_status():
                 res = await client.get(
                     "https://api.openai.com/v1/models",
                     headers={"Authorization": f"Bearer {oa_key}"},
-                    timeout=5.0
+                    timeout=15.0
                 )
                 status["openai"] = {"status": "ok" if res.status_code == 200 else f"error_{res.status_code}"}
         except Exception as e:
@@ -366,7 +366,7 @@ async def get_providers_status():
                 async with httpx.AsyncClient() as client:
                     res = await client.get(
                         f"https://generativelanguage.googleapis.com/v1beta/models?key={gem_key}",
-                        timeout=5.0
+                        timeout=15.0
                     )
                     status["gemini"] = {"status": "ok" if res.status_code == 200 else f"error_{res.status_code}"}
             except Exception as e:
