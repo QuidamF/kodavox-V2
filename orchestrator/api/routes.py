@@ -311,56 +311,62 @@ async def get_providers_status():
         "gemini": {"status": "inactive"}
     }
     
+    el_key = os.getenv("ELEVENLABS_API_KEY")
+    oa_key = os.getenv("OPENAI_API_KEY")
+    gem_key = os.getenv("GEMINI_API_KEY")
+
     if active_stt == 'elevenlabs' or active_tts == 'elevenlabs':
-        el_key = os.getenv("ELEVENLABS_API_KEY")
-    if el_key:
-        try:
-            async with httpx.AsyncClient() as client:
-                res = await client.get(
-                    "https://api.elevenlabs.io/v1/models",
-                    headers={"xi-api-key": el_key},
-                    timeout=15.0
-                )
-                if res.status_code == 200:
-                    status["elevenlabs"] = {
-                        "status": "ok",
-                        "status_tier": "API Key Válida"
-                    }
-                elif res.status_code == 401:
-                    try:
-                        error_data = res.json()
-                        detail = error_data.get("detail", {})
-                        if detail.get("status") == "invalid_api_key":
+        if el_key:
+            try:
+                async with httpx.AsyncClient() as client:
+                    res = await client.get(
+                        "https://api.elevenlabs.io/v1/models",
+                        headers={"xi-api-key": el_key},
+                        timeout=15.0
+                    )
+                    if res.status_code == 200:
+                        status["elevenlabs"] = {
+                            "status": "ok",
+                            "status_tier": "API Key Válida"
+                        }
+                    elif res.status_code == 401:
+                        try:
+                            error_data = res.json()
+                            detail = error_data.get("detail", {})
+                            if isinstance(detail, dict):
+                                status_str = str(detail.get("status", "")).lower()
+                            else:
+                                status_str = str(detail).lower()
+
+                            if "invalid" in status_str:
+                                status["elevenlabs"] = {"status": "invalid_key", "code": 401}
+                            else:
+                                status["elevenlabs"] = {"status": "ok", "status_tier": "API Key Válida (Scoped)"}
+                        except Exception:
                             status["elevenlabs"] = {"status": "invalid_key", "code": 401}
-                        else:
-                            status["elevenlabs"] = {"status": "ok", "status_tier": "API Key Válida (Scoped)"}
-                    except:
-                        status["elevenlabs"] = {"status": "invalid_key", "code": 401}
-                else:
-                    status["elevenlabs"] = {"status": "error", "code": res.status_code}
-        except Exception as e:
-            status["elevenlabs"] = {"status": "error", "message": str(e)}
-    elif active_stt == 'elevenlabs' or active_tts == 'elevenlabs':
-        status["elevenlabs"] = {"status": "missing_key"}
+                    else:
+                        status["elevenlabs"] = {"status": "error", "code": res.status_code}
+            except Exception as e:
+                status["elevenlabs"] = {"status": "error", "message": str(e)}
+        else:
+            status["elevenlabs"] = {"status": "missing_key"}
 
     if active_llm == 'openai':
-        oa_key = os.getenv("OPENAI_API_KEY")
-    if oa_key:
-        try:
-            async with httpx.AsyncClient() as client:
-                res = await client.get(
-                    "https://api.openai.com/v1/models",
-                    headers={"Authorization": f"Bearer {oa_key}"},
-                    timeout=15.0
-                )
-                status["openai"] = {"status": "ok" if res.status_code == 200 else f"error_{res.status_code}"}
-        except Exception as e:
-            status["openai"] = {"status": "error", "message": str(e)}
-    elif active_llm == 'openai':
-        status["openai"] = {"status": "missing_key"}
+        if oa_key:
+            try:
+                async with httpx.AsyncClient() as client:
+                    res = await client.get(
+                        "https://api.openai.com/v1/models",
+                        headers={"Authorization": f"Bearer {oa_key}"},
+                        timeout=15.0
+                    )
+                    status["openai"] = {"status": "ok" if res.status_code == 200 else f"error_{res.status_code}"}
+            except Exception as e:
+                status["openai"] = {"status": "error", "message": str(e)}
+        else:
+            status["openai"] = {"status": "missing_key"}
 
     if active_llm == 'gemini':
-        gem_key = os.getenv("GEMINI_API_KEY")
         if gem_key:
             try:
                 async with httpx.AsyncClient() as client:
