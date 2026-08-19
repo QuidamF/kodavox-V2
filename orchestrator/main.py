@@ -1,4 +1,9 @@
 import os
+import sys
+
+# Hack para que los imports "from main import pipeline" de routes.py usen la misma instancia de la pipeline corriendo
+sys.modules['main'] = sys.modules[__name__]
+
 import asyncio
 import socketio
 import uvicorn

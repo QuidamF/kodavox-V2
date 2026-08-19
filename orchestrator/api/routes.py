@@ -391,29 +391,33 @@ async def export_config(payload: dict = Body(...)):
     temp_dir = tempfile.mkdtemp()
     zip_path = os.path.join(temp_dir, "kodavox_full_profile.zip")
     
-    with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
-        manifest = {
-            "has_state": True,
-            "has_env": include_env,
-            "has_rag": include_rag,
-            "has_credentials": include_credentials and os.path.exists(creds_path),
-            "version": "2.0"
-        }
-        zipf.writestr("manifest.json", json.dumps(manifest))
-        if os.path.exists(state_path):
-            zipf.write(state_path, "engine_state.json")
-        if include_env and os.path.exists(env_path):
-            zipf.write(env_path, ".env")
-        if include_credentials and os.path.exists(creds_path):
-            zipf.write(creds_path, "credentials.json")
-        if include_rag and os.path.exists(chroma_path):
-            for root, _, files in os.walk(chroma_path):
-                for file in files:
-                    file_path = os.path.join(root, file)
-                    arcname = os.path.join("chroma_db", os.path.relpath(file_path, chroma_path))
-                    zipf.write(file_path, arcname)
-                    
-    return FileResponse(path=zip_path, filename="kodavox_full_profile.zip", media_type="application/zip")
+    try:
+        with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
+            manifest = {
+                "has_state": True,
+                "has_env": include_env,
+                "has_rag": include_rag,
+                "has_credentials": include_credentials and os.path.exists(creds_path),
+                "version": "2.0"
+            }
+            zipf.writestr("manifest.json", json.dumps(manifest))
+            if os.path.exists(state_path):
+                zipf.write(state_path, "engine_state.json")
+            if include_env and os.path.exists(env_path):
+                zipf.write(env_path, ".env")
+            if include_credentials and os.path.exists(creds_path):
+                zipf.write(creds_path, "credentials.json")
+            if include_rag and os.path.exists(chroma_path):
+                for root, _, files in os.walk(chroma_path):
+                    for file in files:
+                        file_path = os.path.join(root, file)
+                        arcname = os.path.join("chroma_db", os.path.relpath(file_path, chroma_path))
+                        zipf.write(file_path, arcname)
+                        
+        return FileResponse(path=zip_path, filename="kodavox_full_profile.zip", media_type="application/zip")
+    except Exception as e:
+        print(f"[Error Export] {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error exporting profile: {str(e)}")
 
 async def restart_server_task():
     await asyncio.sleep(2)
