@@ -31,6 +31,11 @@ def save_credentials(keys_dict: dict):
     for k, v in keys_dict.items():
         if v:
             clean_v = str(v).strip()
+            # Si pegaron por error 'sk-proj-...' dos veces juntas
+            if k == "OPENAI_API_KEY" and clean_v.count("sk-proj-") > 1:
+                first_idx = clean_v.find("sk-proj-")
+                second_idx = clean_v.find("sk-proj-", first_idx + 1)
+                clean_v = clean_v[second_idx:]
             creds[k] = clean_v
             os.environ[k] = clean_v
 
