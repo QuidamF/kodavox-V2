@@ -713,7 +713,7 @@ function App() {
 
               <div className="overflow-y-auto pr-2 custom-scrollbar flex-1 mb-4">
                 <form id="credentials-form" onSubmit={handleSaveCredentials} className="space-y-5">
-                  {credentialsStatus.llm_provider === 'openai' && !credentialsStatus.OPENAI_API_KEY && (
+                  {credentialsStatus.llm_provider === 'openai' && (
                     <div className="space-y-2">
                       <label className="text-sm font-medium text-slate-300">OpenAI API Key <span className="text-red-400">*</span></label>
                       <input 
@@ -727,7 +727,7 @@ function App() {
                     </div>
                   )}
 
-                  {credentialsStatus.llm_provider === 'gemini' && !credentialsStatus.GEMINI_API_KEY && (
+                  {credentialsStatus.llm_provider === 'gemini' && (
                     <div className="space-y-2">
                       <label className="text-sm font-medium text-slate-300">Google Gemini API Key <span className="text-red-400">*</span></label>
                       <input 
@@ -741,7 +741,7 @@ function App() {
                     </div>
                   )}
 
-                  {(credentialsStatus.stt_provider === 'elevenlabs' || credentialsStatus.tts_provider === 'elevenlabs') && !credentialsStatus.ELEVENLABS_API_KEY && (
+                  {(credentialsStatus.stt_provider === 'elevenlabs' || credentialsStatus.tts_provider === 'elevenlabs') && (
                     <div className="space-y-2">
                       <label className="text-sm font-medium text-slate-300">ElevenLabs API Key <span className="text-red-400">*</span></label>
                       <input 
