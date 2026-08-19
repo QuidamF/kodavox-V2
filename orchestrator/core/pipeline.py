@@ -497,9 +497,26 @@ class EnginePipeline:
                     if context:
                         print(f"[Pipeline] Contexto RAG recuperado de '{self.active_rag_collection}' (Modo Estricto: {getattr(self, 'rag_strict_mode', False)})")
                         if getattr(self, 'rag_strict_mode', False):
-                            prompt = f"RESPONDE ÚNICAMENTE usando la siguiente información de la Base de Conocimientos. Si la respuesta no está contenida en el contexto, indica amablemente que no posees esa información en tus datos cargados. NO inventes ni uses tu conocimiento general.\n\nContexto:\n{context}\n\nPregunta del Usuario:\n{text}"
+                            prompt = (
+                                f"Manteniendo SIEMPRE tu personalidad, tono y rol especificado en tus instrucciones de sistema, "
+                                f"responde a la pregunta del usuario ÚNICAMENTE utilizando la información factual de la siguiente Base de Conocimientos.\n\n"
+                                f"Reglas estrictas:\n"
+                                f"1. Adopta tu personaje, actitud y estilo de comunicación en todo momento.\n"
+                                f"2. Basa los datos de tu respuesta EXCLUSIVAMENTE en el siguiente contexto.\n"
+                                f"3. Si la respuesta no se encuentra en el contexto, expresa amablemente DENTRO DE TU PERSONAJE que no cuentas con esa información cargada. NO inventes ni agregues datos de tu conocimiento general.\n\n"
+                                f"Contexto:\n{context}\n\n"
+                                f"Pregunta del Usuario:\n{text}"
+                            )
                         else:
-                            prompt = f"Utiliza la siguiente información de la Base de Conocimientos para responder a la pregunta del usuario. Si la información no responde la pregunta completa, usa tu propio conocimiento pero dale prioridad al contexto dado.\n\nContexto:\n{context}\n\nPregunta del Usuario:\n{text}"
+                            prompt = (
+                                f"Manteniendo tu personalidad y rol de sistema, responde a la pregunta del usuario dando prioridad a la Base de Conocimientos.\n\n"
+                                f"Instrucciones:\n"
+                                f"1. Mantén tu personaje, tono y estilo en todo momento.\n"
+                                f"2. Usa prioritariamente la información del siguiente contexto RAG.\n"
+                                f"3. Si el contexto no cubre la pregunta completa, puedes complementar con tu conocimiento general, sin salirte de tu personaje.\n\n"
+                                f"Contexto:\n{context}\n\n"
+                                f"Pregunta del Usuario:\n{text}"
+                            )
                 except Exception as e:
                     print(f"[Pipeline RAG Error] {e}")
 
